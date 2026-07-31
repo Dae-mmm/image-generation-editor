@@ -297,6 +297,7 @@ function layoutFromPreset(preset: LayoutPreset): Pick<Slide, "textLayout" | "log
         prezzoListino: false,
         labelTesserati: false,
         prezzoTesserati: false,
+        sconto: false,
       },
       useBoxLines: true,
       boxLines: defaultSingleCenterBoxLines(),
