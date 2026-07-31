@@ -1,9 +1,10 @@
 import { useState, useRef, useCallback, useEffect, type ReactNode } from "react";
 import {
   Upload, Download, Plus, Trash2,
-  RefreshCcw, Move, ZoomIn, Save, FolderOpen, ChevronDown,
+  RefreshCcw, Move, ZoomIn, Save, FolderOpen, ChevronDown, Sparkles, X,
 } from "lucide-react";
 import simboloPSC from "../imports/SimboloPSC.png";
+import { downloadImageUrl, formatFalError, generateFromPhoto } from "../lib/fal";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -1648,6 +1649,13 @@ export default function App() {
   const [exporting, setExporting]   = useState(false);
   const [copiedLayout, setCopiedLayout] = useState(false);
   const [selectedBoxLineId, setSelectedBoxLineId] = useState<string | null>(null);
+  const [falPrompt, setFalPrompt] = useState("");
+  const [falGenerating, setFalGenerating] = useState(false);
+  const [falModalOpen, setFalModalOpen] = useState(false);
+  const [falResultUrl, setFalResultUrl] = useState<string | null>(null);
+  const [falSourceSrc, setFalSourceSrc] = useState<string | null>(null);
+  const [falError, setFalError] = useState("");
+  const [falStatus, setFalStatus] = useState("");
   const previewRef = useRef<HTMLDivElement>(null);
   const bgUndo = useRef<ImgTransform[]>([]);
   const bgRedo = useRef<ImgTransform[]>([]);
@@ -1675,6 +1683,7 @@ export default function App() {
     logoUndo.current = [];
     logoRedo.current = [];
     setSelectedBoxLineId(null);
+    setFalPrompt((slide.descrizione || "").split("\n")[0].trim());
   }, [slide.id]);
 
   const appendSlides = (imported: Slide[]) => {
@@ -1688,6 +1697,62 @@ export default function App() {
   const updateSlide = useCallback((patch: Partial<Slide>) => {
     setSlides((prev) => prev.map((s, i) => (i === current ? { ...s, ...patch } : s)));
   }, [current]);
+
+  const runFalGenerate = async (sourceSrc: string, prompt: string) => {
+    setFalGenerating(true);
+    setFalError("");
+    setFalStatus("Avvio…");
+    setFalSourceSrc(sourceSrc);
+    setFalResultUrl(null);
+    setFalModalOpen(true);
+    try {
+      const url = await generateFromPhoto(sourceSrc, prompt, setFalStatus);
+      setFalResultUrl(url);
+      setFalStatus("");
+    } catch (err) {
+      console.error("[fal]", err);
+      const msg = formatFalError(err);
+      setFalError(msg);
+      setFalStatus("");
+    } finally {
+      setFalGenerating(false);
+    }
+  };
+
+  const handleFalGenerate = async () => {
+    if (!slide.bg?.src || falGenerating) return;
+    await runFalGenerate(slide.bg.src, falPrompt);
+  };
+
+  const handleFalRipeti = async () => {
+    const src = falSourceSrc || slide.bg?.src;
+    if (!src || falGenerating) return;
+    await runFalGenerate(src, falPrompt);
+  };
+
+  const handleFalSostituisci = () => {
+    if (!falResultUrl) return;
+    updateSlide({ bg: { src: falResultUrl, x: 0, y: 0, scale: 1 } });
+    setFalModalOpen(false);
+    setFalResultUrl(null);
+    setFalError("");
+  };
+
+  const handleFalAnnulla = () => {
+    setFalModalOpen(false);
+    setFalResultUrl(null);
+    setFalError("");
+  };
+
+  const handleFalScarica = async () => {
+    if (!falResultUrl) return;
+    try {
+      const name = (falPrompt || slide.descrizione || "generata").split("\n")[0].trim().slice(0, 60) || "generata";
+      await downloadImageUrl(falResultUrl, `${name}.jpg`);
+    } catch {
+      alert("Download fallito");
+    }
+  };
 
   const pushBgUndo = useCallback(() => {
     const bg = slides[current]?.bg;
@@ -2059,10 +2124,47 @@ export default function App() {
                   onLogoGestureStart={pushLogoUndo}
                   scale={ps * contentScale}
                 />
+                {falGenerating && (
+                  <div className="fal-generating-overlay">
+                    <div className="fal-generating-label">{falStatus || "Generazione in corso…"}</div>
+                  </div>
+                )}
               </div>
             </div>
           );
         })()}
+        {slide.bg && (
+          <div
+            className="absolute top-3 left-1/2 -translate-x-1/2 flex items-center gap-2 px-3 py-2 rounded-xl shadow-sm"
+            style={{
+              zIndex: 35,
+              background: "rgba(255,255,255,0.94)",
+              border: "1px solid #e4e4e8",
+              maxWidth: "min(560px, calc(100% - 24px))",
+              width: "100%",
+            }}
+          >
+            <input
+              type="text"
+              className="flex-1 min-w-0 px-2.5 py-1.5 text-xs rounded-lg border outline-none"
+              style={{ borderColor: "#e4e4e8", color: "#333" }}
+              value={falPrompt}
+              onChange={(e) => setFalPrompt(e.target.value)}
+              placeholder="Descrivi il prodotto in breve…"
+              disabled={falGenerating}
+            />
+            <button
+              type="button"
+              className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold text-white disabled:opacity-50"
+              style={{ background: GREEN }}
+              disabled={falGenerating}
+              onClick={handleFalGenerate}
+            >
+              <Sparkles size={13} />
+              {falGenerating ? "Generazione…" : "Genera da questa"}
+            </button>
+          </div>
+        )}
         {(photoMode || activeEdit || selectedBoxLineId) && (
           <div
             className="absolute bottom-5 left-1/2 -translate-x-1/2 flex items-center gap-2 px-4 py-2 rounded-full text-xs text-white"
@@ -2700,6 +2802,106 @@ export default function App() {
           </button>
         </div>
       </div>
+
+      {falModalOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ background: "rgba(0,0,0,0.55)", backdropFilter: "blur(4px)" }}
+        >
+          <div
+            className="w-full max-w-lg rounded-2xl overflow-hidden flex flex-col"
+            style={{ background: "white", maxHeight: "90vh", boxShadow: "0 24px 80px rgba(0,0,0,0.35)" }}
+          >
+            <div className="flex items-center justify-between px-4 py-3" style={{ borderBottom: "1px solid #eee" }}>
+              <div className="text-sm font-bold" style={{ color: "#222" }}>Anteprima generazione</div>
+              <button type="button" onClick={handleFalAnnulla} style={{ color: "#999" }} aria-label="Chiudi">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="relative flex-1 overflow-auto p-4 flex flex-col gap-3 min-h-0">
+              <div
+                className="relative w-full rounded-xl overflow-hidden"
+                style={{ background: "#f3f3f5", aspectRatio: "1 / 1", maxHeight: "52vh" }}
+              >
+                {falResultUrl && (
+                  <img
+                    src={falResultUrl}
+                    alt="Risultato Fal"
+                    className="w-full h-full object-contain"
+                    style={{ filter: falGenerating ? "blur(2px) saturate(0.6)" : undefined }}
+                  />
+                )}
+                {falGenerating && (
+                  <div className="fal-generating-overlay" style={{ borderRadius: 12 }}>
+                    <div className="fal-generating-label">{falStatus || "Generazione in corso…"}</div>
+                  </div>
+                )}
+                {!falGenerating && !falResultUrl && !falError && (
+                  <div className="absolute inset-0 flex items-center justify-center text-xs" style={{ color: "#aaa" }}>
+                    Nessuna anteprima
+                  </div>
+                )}
+              </div>
+              <label className="flex flex-col gap-1">
+                <span style={{ fontSize: 11, color: "#aaa" }}>Prompt</span>
+                <input
+                  type="text"
+                  className="w-full px-3 py-2 text-sm rounded-lg border outline-none"
+                  style={{ borderColor: "#e4e4e8" }}
+                  value={falPrompt}
+                  onChange={(e) => setFalPrompt(e.target.value)}
+                  disabled={falGenerating}
+                  placeholder="Descrivi il prodotto in breve…"
+                />
+              </label>
+              {falError && (
+                <p style={{ fontSize: 12, color: "#c0392b", margin: 0, lineHeight: 1.4 }}>{falError}</p>
+              )}
+            </div>
+            <div
+              className="grid grid-cols-2 gap-2 px-4 py-3"
+              style={{ borderTop: "1px solid #eee" }}
+            >
+              <button
+                type="button"
+                className="px-3 py-2.5 rounded-lg text-xs font-semibold border"
+                style={{ borderColor: "#e4e4e8", color: "#666" }}
+                onClick={handleFalAnnulla}
+                disabled={falGenerating}
+              >
+                Annulla
+              </button>
+              <button
+                type="button"
+                className="px-3 py-2.5 rounded-lg text-xs font-semibold border flex items-center justify-center gap-1.5"
+                style={{ borderColor: "#e4e4e8", color: "#555" }}
+                onClick={handleFalRipeti}
+                disabled={falGenerating}
+              >
+                <RefreshCcw size={12} /> Ripeti
+              </button>
+              <button
+                type="button"
+                className="px-3 py-2.5 rounded-lg text-xs font-semibold border flex items-center justify-center gap-1.5"
+                style={{ borderColor: "#e4e4e8", color: "#555" }}
+                onClick={handleFalScarica}
+                disabled={falGenerating || !falResultUrl}
+              >
+                <Download size={12} /> Scarica
+              </button>
+              <button
+                type="button"
+                className="px-3 py-2.5 rounded-lg text-xs font-bold text-white disabled:opacity-50"
+                style={{ background: GREEN }}
+                onClick={handleFalSostituisci}
+                disabled={falGenerating || !falResultUrl}
+              >
+                Sostituisci
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
