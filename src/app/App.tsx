@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, type ReactNode } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import {
   Upload, Download, Plus, Trash2, FileSpreadsheet,
   RefreshCcw, Move, ZoomIn, Save, FolderOpen,
@@ -15,16 +15,6 @@ interface ImgTransform {
   scale: number;
 }
 
-interface Slide {
-  id: string;
-  descrizione: string;
-  prezzoTesserati: string;
-  prezzoListino: string;
-  sconto: string;
-  bg: ImgTransform | null;
-  logo: ImgTransform | null;
-}
-
 type TextKey =
   | "descrizione"
   | "labelTesserati"
@@ -33,11 +23,15 @@ type TextKey =
   | "prezzoListino"
   | "sconto";
 
+type TextAlign = "left" | "center" | "right";
+
+type LayoutPreset = "standard" | "singleCenter";
+
 interface TextStyle {
   size: number;
-  x: number; // left (or right edge if align === "right")
+  x: number; // left, center, or right edge depending on align
   y: number; // top
-  align: "left" | "right";
+  align: TextAlign;
   /** Drop shadow blur in px; 0 = off */
   shadowBlur: number;
   /** Drop shadow opacity 0–1 */
@@ -55,7 +49,54 @@ interface LayoutBox {
   h: number;
 }
 
-type ActiveEdit = "bg" | "logo" | "logoBox" | "tesseratiBox" | TextKey | null;
+interface SlideVisibility {
+  listinoBox: boolean;
+  labelListino: boolean;
+  prezzoListino: boolean;
+  sconto: boolean;
+  labelTesserati: boolean;
+  prezzoTesserati: boolean;
+  descrizione: boolean;
+  /** White rounded plate behind the logo image */
+  logoBoxBg: boolean;
+}
+
+/** Freeform text line inside the tesserati / single box */
+interface BoxLine {
+  id: string;
+  text: string;
+  size: number;
+  weight: number;
+  color: string;
+  align: TextAlign;
+  letterSpacing: number;
+  /** Fine vertical nudge from auto-stacked position */
+  offsetY: number;
+}
+
+interface Slide {
+  id: string;
+  descrizione: string;
+  prezzoTesserati: string;
+  prezzoListino: string;
+  sconto: string;
+  labelTesseratiText: string;
+  labelListinoText: string;
+  bg: ImgTransform | null;
+  logo: ImgTransform | null;
+  textLayout: TextLayout;
+  logoBox: LayoutBox;
+  tesseratiBox: LayoutBox;
+  listinoBox: LayoutBox;
+  visibility: SlideVisibility;
+  /** When true, render boxLines inside tesserati box instead of label+price */
+  useBoxLines: boolean;
+  boxLines: BoxLine[];
+  /** Inner padding around freeform box lines (single-box layout) */
+  boxPadding: number;
+}
+
+type ActiveEdit = "bg" | "logo" | "logoBox" | "tesseratiBox" | "listinoBox" | TextKey | null;
 
 const TEXT_KEYS: TextKey[] = [
   "descrizione",
@@ -75,9 +116,27 @@ const TEXT_LABELS: Record<TextKey, string> = {
   sconto: "Sconto",
 };
 
+const PRESET_LABELS: Record<LayoutPreset, string> = {
+  standard: "Standard (2 box)",
+  singleCenter: "Box singolo",
+};
+
 const NO_SHADOW = { shadowBlur: 0, shadowOpacity: 0.65, shadowOffsetY: 0 } as const;
 
-/** Defaults calibrated at DEFAULT_H (685). x = left, or right edge when align=right. */
+function defaultVisibility(): SlideVisibility {
+  return {
+    listinoBox: true,
+    labelListino: true,
+    prezzoListino: true,
+    sconto: true,
+    labelTesserati: true,
+    prezzoTesserati: true,
+    descrizione: true,
+    logoBoxBg: true,
+  };
+}
+
+/** Defaults calibrated at DEFAULT_H (685). x = left, center, or right edge when align=right. */
 function defaultTextLayout(): TextLayout {
   return {
     descrizione:     { size: 22,  x: 38,  y: 464, align: "left",  shadowBlur: 12, shadowOpacity: 0.65, shadowOffsetY: 2 },
@@ -104,12 +163,156 @@ function cssTextShadow(style: TextStyle): string | undefined {
   return `0 ${style.shadowOffsetY}px ${style.shadowBlur}px rgba(0,0,0,${style.shadowOpacity})`;
 }
 
+function textAlignTransform(align: TextAlign): string | undefined {
+  if (align === "right") return "translateX(-100%)";
+  if (align === "center") return "translateX(-50%)";
+  return undefined;
+}
+
 function defaultLogoBox(): LayoutBox {
   return { x: 500, y: 18, w: 284, h: 165 };
 }
 
 function defaultTesseratiBox(): LayoutBox {
   return { x: 21, y: 518, w: 289, h: 140 };
+}
+
+function defaultListinoBox(): LayoutBox {
+  // Matches pbox1Rect(DEFAULT_H): bottom-anchored listino strip
+  return { x: 33, y: 562, w: 421, h: 93 };
+}
+
+function mkBoxLine(partial?: Partial<Omit<BoxLine, "id">> & { id?: string }): BoxLine {
+  return {
+    id: partial?.id ?? uid(),
+    text: partial?.text ?? "",
+    size: partial?.size ?? 28,
+    weight: partial?.weight ?? 600,
+    color: partial?.color ?? GREEN,
+    align: partial?.align ?? "center",
+    letterSpacing: partial?.letterSpacing ?? 0,
+    offsetY: partial?.offsetY ?? 0,
+  };
+}
+
+function defaultSingleCenterBoxLines(): BoxLine[] {
+  return [
+    mkBoxLine({ text: "Offerta speciale", size: 26, weight: 600, color: GREEN }),
+    mkBoxLine({ text: "tutto a 9,99€", size: 52, weight: 700, color: GREEN, letterSpacing: -1 }),
+    mkBoxLine({ text: "fino al 12 aprile", size: 22, weight: 400, color: GREEN }),
+  ];
+}
+
+function normalizeBoxLines(raw: any): BoxLine[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((line) => mkBoxLine(line ?? {}));
+}
+
+/** Stack lines vertically centered in the box; returns absolute positions (top of each line). */
+function boxLinePositions(box: LayoutBox, lines: BoxLine[], gap = 8, padding = 24) {
+  const heights = lines.map((l) => l.size * 1.15);
+  const total = heights.reduce((a, b) => a + b, 0) + gap * Math.max(0, lines.length - 1);
+  let y = box.y + (box.h - total) / 2;
+  return lines.map((line, i) => {
+    const top = y + line.offsetY;
+    const x =
+      line.align === "left" ? box.x + padding
+      : line.align === "right" ? box.x + box.w - padding
+      : box.x + box.w / 2;
+    const pos = { line, x, y: top, h: heights[i] };
+    y += heights[i] + gap;
+    return pos;
+  });
+}
+
+function measureBoxLinesContent(lines: BoxLine[], fontFam: string, gap = 8): { w: number; h: number } {
+  if (!lines.length) return { w: 120, h: 60 };
+  let maxW = 0;
+  let totalH = 0;
+  if (typeof document !== "undefined") {
+    const ctx = document.createElement("canvas").getContext("2d");
+    if (ctx) {
+      lines.forEach((line, i) => {
+        ctx.font = `${line.weight} ${line.size}px "${fontFam}", sans-serif`;
+        const text = line.text || " ";
+        let width = ctx.measureText(text).width;
+        if (line.letterSpacing) width += line.letterSpacing * Math.max(0, text.length - 1);
+        maxW = Math.max(maxW, width);
+        totalH += line.size * 1.15;
+        if (i < lines.length - 1) totalH += gap;
+      });
+    }
+  }
+  if (maxW === 0 && totalH === 0) {
+    lines.forEach((line, i) => {
+      maxW = Math.max(maxW, line.size * 0.55 * Math.max(1, (line.text || " ").length));
+      totalH += line.size * 1.15;
+      if (i < lines.length - 1) totalH += gap;
+    });
+  }
+  const minOff = Math.min(0, ...lines.map((l) => l.offsetY));
+  const maxOff = Math.max(0, ...lines.map((l) => l.offsetY));
+  totalH += maxOff - minOff;
+  return { w: maxW, h: totalH };
+}
+
+/** Auto-size white box around freeform lines, keeping the current center. */
+function fitTesseratiBoxToLines(
+  box: LayoutBox,
+  lines: BoxLine[],
+  padding: number,
+  fontFam: string,
+): LayoutBox {
+  const content = measureBoxLinesContent(lines, fontFam);
+  const w = Math.max(80, Math.round(content.w + padding * 2));
+  const h = Math.max(60, Math.round(content.h + padding * 2));
+  const cx = box.x + box.w / 2;
+  const cy = box.y + box.h / 2;
+  return {
+    w,
+    h,
+    x: Math.round(Math.max(8, Math.min(CARD_W - w - 8, cx - w / 2))),
+    y: Math.round(cy - h / 2),
+  };
+}
+
+function layoutFromPreset(preset: LayoutPreset): Pick<Slide, "textLayout" | "logoBox" | "tesseratiBox" | "listinoBox" | "visibility" | "useBoxLines" | "boxLines" | "boxPadding"> {
+  if (preset === "singleCenter") {
+    return {
+      logoBox: defaultLogoBox(),
+      listinoBox: defaultListinoBox(),
+      tesseratiBox: { x: 120, y: 470, w: 560, h: 185 },
+      textLayout: {
+        descrizione:     { size: 24, x: 400, y: 418, align: "center", shadowBlur: 12, shadowOpacity: 0.65, shadowOffsetY: 2 },
+        labelTesserati:  { size: 28, x: 400, y: 498, align: "center", ...NO_SHADOW },
+        prezzoTesserati: { size: 72, x: 400, y: 545, align: "center", ...NO_SHADOW },
+        labelListino:    { size: 20, x: 319, y: 566, align: "left",  ...NO_SHADOW },
+        prezzoListino:   { size: 30, x: 447, y: 611, align: "right", ...NO_SHADOW },
+        sconto:          { size: 90, x: 758, y: 300, align: "right", shadowBlur: 0, shadowOpacity: 0.65, shadowOffsetY: 2 },
+      },
+      visibility: {
+        ...defaultVisibility(),
+        listinoBox: false,
+        labelListino: false,
+        prezzoListino: false,
+        labelTesserati: false,
+        prezzoTesserati: false,
+      },
+      useBoxLines: true,
+      boxLines: defaultSingleCenterBoxLines(),
+      boxPadding: 36,
+    };
+  }
+  return {
+    textLayout: defaultTextLayout(),
+    logoBox: defaultLogoBox(),
+    tesseratiBox: defaultTesseratiBox(),
+    listinoBox: defaultListinoBox(),
+    visibility: defaultVisibility(),
+    useBoxLines: false,
+    boxLines: [],
+    boxPadding: 36,
+  };
 }
 
 function isTextKey(k: string | null): k is TextKey {
@@ -177,7 +380,52 @@ function pbox1Rect(H: number) {
 const uid = () => Math.random().toString(36).slice(2);
 
 function mkSlide(d?: Partial<Omit<Slide, "id">>): Slide {
-  return { id: uid(), descrizione: "", prezzoTesserati: "", prezzoListino: "", sconto: "", bg: null, logo: null, ...d };
+  const layout = layoutFromPreset("standard");
+  return {
+    id: uid(),
+    descrizione: d?.descrizione ?? "",
+    prezzoTesserati: d?.prezzoTesserati ?? "",
+    prezzoListino: d?.prezzoListino ?? "",
+    sconto: d?.sconto ?? "",
+    labelTesseratiText: d?.labelTesseratiText ?? "Prezzo Tesserati",
+    labelListinoText: d?.labelListinoText ?? "Prezzo\ndi listino",
+    bg: d?.bg ?? null,
+    logo: d?.logo ?? null,
+    textLayout: mergeTextLayout(d?.textLayout),
+    logoBox: { ...layout.logoBox, ...d?.logoBox },
+    tesseratiBox: { ...layout.tesseratiBox, ...d?.tesseratiBox },
+    listinoBox: { ...layout.listinoBox, ...d?.listinoBox },
+    visibility: { ...layout.visibility, ...d?.visibility },
+    useBoxLines: d?.useBoxLines ?? false,
+    boxLines: d?.boxLines ? normalizeBoxLines(d.boxLines) : [],
+    boxPadding: d?.boxPadding ?? 36,
+  };
+}
+
+function normalizeSlide(
+  raw: any,
+  fallback?: Partial<Pick<Slide, "textLayout" | "logoBox" | "tesseratiBox" | "listinoBox" | "visibility" | "useBoxLines" | "boxLines" | "boxPadding">>,
+): Slide {
+  const slide = mkSlide({
+    descrizione: raw?.descrizione,
+    prezzoTesserati: raw?.prezzoTesserati,
+    prezzoListino: raw?.prezzoListino,
+    sconto: raw?.sconto,
+    labelTesseratiText: raw?.labelTesseratiText,
+    labelListinoText: raw?.labelListinoText,
+    bg: raw?.bg ?? null,
+    logo: raw?.logo ?? null,
+    textLayout: raw?.textLayout ?? fallback?.textLayout,
+    logoBox: raw?.logoBox ?? fallback?.logoBox,
+    tesseratiBox: raw?.tesseratiBox ?? fallback?.tesseratiBox,
+    listinoBox: raw?.listinoBox ?? fallback?.listinoBox,
+    visibility: raw?.visibility ?? fallback?.visibility,
+    useBoxLines: raw?.useBoxLines ?? fallback?.useBoxLines,
+    boxLines: raw?.boxLines ?? fallback?.boxLines,
+    boxPadding: raw?.boxPadding ?? fallback?.boxPadding,
+  });
+  if (raw?.id) slide.id = String(raw.id);
+  return slide;
 }
 
 async function fileToDataUrl(f: File): Promise<string> {
@@ -350,10 +598,7 @@ function drawLayoutText(
   ctx.textBaseline = "alphabetic";
 }
 
-async function exportSlide(
-  slide: Slide, H: number, fontFam: string,
-  textLayout: TextLayout, logoBox: LayoutBox, tesseratiBox: LayoutBox,
-) {
+async function exportSlide(slide: Slide, H: number, fontFam: string) {
   await document.fonts.ready;
 
   const W = CARD_W;
@@ -361,7 +606,10 @@ async function exportSlide(
   canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext("2d")!;
   const ph = photoRect(H);
-  const pb1 = pbox1Rect(H);
+  const { textLayout, logoBox, listinoBox, visibility: vis } = slide;
+  const tesseratiBox = slide.useBoxLines
+    ? fitTesseratiBoxToLines(slide.tesseratiBox, slide.boxLines, slide.boxPadding ?? 36, fontFam)
+    : slide.tesseratiBox;
   const { x: LOGO_X, y: LOGO_Y, w: LOGO_W, h: LOGO_H } = logoBox;
 
   // 1. White canvas background (shows through card corners)
@@ -384,14 +632,16 @@ async function exportSlide(
   }
   ctx.restore(); // end photo clip
 
-  // 4. PBOX1 — wide/short (back), with shadow
-  ctx.save();
-  ctx.shadowColor = "rgba(0,0,0,0.25)"; ctx.shadowBlur = 10; ctx.shadowOffsetY = 10;
-  ctx.fillStyle = "white";
-  rrect(ctx, pb1.l, pb1.t, pb1.w, pb1.h, PBOX_RADIUS); ctx.fill();
-  ctx.restore();
+  // 4. Listino box (back) — optional
+  if (vis.listinoBox) {
+    ctx.save();
+    ctx.shadowColor = "rgba(0,0,0,0.25)"; ctx.shadowBlur = 10; ctx.shadowOffsetY = 10;
+    ctx.fillStyle = "white";
+    rrect(ctx, listinoBox.x, listinoBox.y, listinoBox.w, listinoBox.h, PBOX_RADIUS); ctx.fill();
+    ctx.restore();
+  }
 
-  // 5. PBOX2 — narrow/tall (front), with heavier shadow
+  // 5. Tesserati box (front)
   ctx.save();
   ctx.shadowColor = "rgba(0,0,0,0.40)"; ctx.shadowBlur = 20; ctx.shadowOffsetY = 10;
   ctx.fillStyle = "white";
@@ -399,28 +649,52 @@ async function exportSlide(
   ctx.restore();
 
   // Texts (layout-driven)
-  if (slide.descrizione) {
+  if (vis.descrizione && slide.descrizione) {
     drawLayoutText(ctx, textLayout.descrizione, slide.descrizione, {
       color: "white", weight: 700, fontFam,
     });
   }
-  drawLayoutText(ctx, textLayout.labelTesserati, "Prezzo Tesserati", {
-    color: GREEN, weight: 600, fontFam,
-  });
-  if (slide.prezzoTesserati) {
-    drawLayoutText(ctx, textLayout.prezzoTesserati, `${slide.prezzoTesserati}€`, {
-      color: GREEN, weight: 700, fontFam,
+  if (slide.useBoxLines && slide.boxLines.length) {
+    const positions = boxLinePositions(tesseratiBox, slide.boxLines, 8, slide.boxPadding ?? 36);
+    for (const pos of positions) {
+      const { line } = pos;
+      if (!line.text) continue;
+      ctx.fillStyle = line.color;
+      ctx.font = `${line.weight} ${line.size}px "${fontFam}", sans-serif`;
+      ctx.textAlign = line.align;
+      ctx.textBaseline = "top";
+      if (line.letterSpacing) {
+        // Canvas letterSpacing is supported in modern browsers
+        (ctx as any).letterSpacing = `${line.letterSpacing}px`;
+      }
+      ctx.fillText(line.text, pos.x, pos.y);
+      (ctx as any).letterSpacing = "0px";
+    }
+    ctx.textAlign = "left";
+    ctx.textBaseline = "alphabetic";
+  } else {
+    if (vis.labelTesserati) {
+      drawLayoutText(ctx, textLayout.labelTesserati, slide.labelTesseratiText || "Prezzo Tesserati", {
+        color: GREEN, weight: 600, fontFam,
+      });
+    }
+    if (vis.prezzoTesserati && slide.prezzoTesserati) {
+      drawLayoutText(ctx, textLayout.prezzoTesserati, `${slide.prezzoTesserati}€`, {
+        color: GREEN, weight: 700, fontFam,
+      });
+    }
+  }
+  if (vis.labelListino) {
+    drawLayoutText(ctx, textLayout.labelListino, slide.labelListinoText || "Prezzo\ndi listino", {
+      color: "#b7b7b7", weight: 400, fontFam,
     });
   }
-  drawLayoutText(ctx, textLayout.labelListino, "Prezzo\ndi listino", {
-    color: "#b7b7b7", weight: 400, fontFam,
-  });
-  if (slide.prezzoListino) {
+  if (vis.prezzoListino && slide.prezzoListino) {
     drawLayoutText(ctx, textLayout.prezzoListino, `${slide.prezzoListino}€`, {
       color: "#b7b7b7", weight: 400, fontFam,
     });
   }
-  if (slide.sconto) {
+  if (vis.sconto && slide.sconto) {
     drawLayoutText(ctx, textLayout.sconto, slide.sconto, {
       color: "white", weight: 400, fontFam,
     });
@@ -432,14 +706,16 @@ async function exportSlide(
     ctx.drawImage(crownImg, CARD_W / 2 - CROWN_W / 2, CROWN_Y, CROWN_W, CROWN_H);
   } catch (_) {}
 
-  // 12. Logo box (white rounded rect)
-  ctx.save();
-  ctx.shadowColor = "rgba(0,0,0,0.18)"; ctx.shadowBlur = 16; ctx.shadowOffsetY = 4;
-  ctx.fillStyle = "white";
-  rrect(ctx, LOGO_X, LOGO_Y, LOGO_W, LOGO_H, LOGO_RADIUS); ctx.fill();
-  ctx.restore();
+  // 12. Logo box (white rounded rect) — optional
+  if (vis.logoBoxBg) {
+    ctx.save();
+    ctx.shadowColor = "rgba(0,0,0,0.18)"; ctx.shadowBlur = 16; ctx.shadowOffsetY = 4;
+    ctx.fillStyle = "white";
+    rrect(ctx, LOGO_X, LOGO_Y, LOGO_W, LOGO_H, LOGO_RADIUS); ctx.fill();
+    ctx.restore();
+  }
 
-  // 13. Logo image (inside logo box)
+  // 13. Logo image (inside logo box area)
   if (slide.logo) {
     ctx.save();
     rrect(ctx, LOGO_X, LOGO_Y, LOGO_W, LOGO_H, LOGO_RADIUS); ctx.clip();
@@ -448,7 +724,7 @@ async function exportSlide(
     const ia = li.naturalWidth / li.naturalHeight;
     const ba = LOGO_W / LOGO_H;
     let dw: number, dh: number;
-    const pad = 20;
+    const pad = vis.logoBoxBg ? 20 : 8;
     if (ia > ba) { dw = LOGO_W - pad * 2; dh = dw / ia; }
     else          { dh = LOGO_H - pad * 2; dw = dh * ia; }
     const logoX2 = LOGO_X + (LOGO_W - dw) / 2 + slide.logo.x;
@@ -626,23 +902,31 @@ interface EditableTextProps {
   color: string;
   fontWeight?: number;
   letterSpacing?: string;
-  children: ReactNode;
+  value: string;
+  onValueChange: (value: string) => void;
+  displayValue?: string;
+  placeholder?: string;
+  multiline?: boolean;
   zIndex?: number;
 }
 
 function EditableText({
   textKey, style, active, onSelect, onChange, previewScale,
-  color, fontWeight = 400, letterSpacing, children, zIndex = 7,
-  interact = true,
-}: EditableTextProps & { interact?: boolean }) {
+  color, fontWeight = 400, letterSpacing,
+  value, onValueChange, displayValue, placeholder = "",
+  multiline = false, zIndex = 7,
+}: EditableTextProps) {
   const dragging = useRef(false);
   const lastPos = useRef({ x: 0, y: 0 });
   const latest = useRef(style);
   latest.current = style;
+  const [editing, setEditing] = useState(false);
+  const editRef = useRef<HTMLDivElement>(null);
+  const valueAtEditStart = useRef(value);
 
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
-      if (!dragging.current) return;
+      if (!dragging.current || editing) return;
       const dx = (e.clientX - lastPos.current.x) / previewScale;
       const dy = (e.clientY - lastPos.current.y) / previewScale;
       lastPos.current = { x: e.clientX, y: e.clientY };
@@ -658,7 +942,28 @@ function EditableText({
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [onChange, previewScale]);
+  }, [onChange, previewScale, editing]);
+
+  useEffect(() => {
+    if (!editing || !editRef.current) return;
+    editRef.current.textContent = valueAtEditStart.current;
+    editRef.current.focus();
+    const range = document.createRange();
+    range.selectNodeContents(editRef.current);
+    const sel = window.getSelection();
+    sel?.removeAllRanges();
+    sel?.addRange(range);
+  }, [editing]);
+
+  const commitEdit = () => {
+    if (!editing || !editRef.current) return;
+    const next = (editRef.current.innerText ?? "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    const cleaned = multiline ? next.replace(/\n$/, "") : next.replace(/\n/g, " ").trimEnd();
+    onValueChange(cleaned);
+    setEditing(false);
+  };
+
+  const shown = displayValue ?? (value || placeholder);
 
   return (
     <div
@@ -667,40 +972,91 @@ function EditableText({
         position: "absolute",
         left: style.x,
         top: style.y,
-        transform: style.align === "right" ? "translateX(-100%)" : undefined,
+        transform: textAlignTransform(style.align),
         fontSize: style.size,
         fontWeight,
         color,
         lineHeight: 1.15,
         letterSpacing,
         textAlign: style.align,
-        textShadow: cssTextShadow(style),
+        textShadow: editing ? undefined : cssTextShadow(style),
         whiteSpace: "pre",
-        cursor: interact ? (active ? "grab" : "pointer") : "default",
-        userSelect: "none",
-        zIndex,
-        outline: active ? "2px dashed rgba(255,255,255,0.9)" : "2px solid transparent",
+        cursor: editing ? "text" : active ? "grab" : "pointer",
+        userSelect: editing ? "text" : "none",
+        zIndex: editing ? 20 : zIndex,
+        outline: editing
+          ? "2px solid rgba(79,141,83,0.95)"
+          : active
+            ? "2px dashed rgba(255,255,255,0.9)"
+            : "2px solid transparent",
         outlineOffset: 4,
-        maxWidth: style.align === "left" ? 520 : undefined,
-        pointerEvents: interact ? "auto" : "none",
+        maxWidth: style.align === "right" ? undefined : 560,
+        pointerEvents: "auto",
+        minWidth: editing ? 24 : undefined,
       }}
-      onClick={(e) => { if (!interact) return; e.stopPropagation(); onSelect(); }}
+      onClick={(e) => {
+        e.stopPropagation();
+        if (editing) return;
+        onSelect();
+      }}
+      onDoubleClick={(e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        onSelect();
+        valueAtEditStart.current = value;
+        setEditing(true);
+      }}
       onMouseDown={(e) => {
-        if (!interact || !active) return;
+        if (editing) {
+          e.stopPropagation();
+          return;
+        }
+        if (!active) return;
         dragging.current = true;
         lastPos.current = { x: e.clientX, y: e.clientY };
         e.preventDefault();
         e.stopPropagation();
       }}
       onWheel={(e) => {
-        if (!interact || !active) return;
+        if (editing || !active) return;
         e.preventDefault();
         e.stopPropagation();
         const delta = e.deltaY < 0 ? 2 : -2;
         onChange({ size: Math.max(8, Math.min(220, latest.current.size + delta)) });
       }}
     >
-      {children}
+      {editing ? (
+        <div
+          ref={editRef}
+          contentEditable
+          suppressContentEditableWarning
+          style={{
+            outline: "none",
+            whiteSpace: multiline ? "pre-wrap" : "pre",
+            caretColor: color,
+            minWidth: 20,
+            minHeight: "1em",
+          }}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+          onBlur={commitEdit}
+          onKeyDown={(e) => {
+            e.stopPropagation();
+            if (e.key === "Escape") {
+              e.preventDefault();
+              setEditing(false);
+            } else if (e.key === "Enter" && !multiline) {
+              e.preventDefault();
+              commitEdit();
+            } else if (e.key === "Enter" && multiline && (e.metaKey || e.ctrlKey)) {
+              e.preventDefault();
+              commitEdit();
+            }
+          }}
+        />
+      ) : (
+        shown
+      )}
     </div>
   );
 }
@@ -716,12 +1072,13 @@ interface EditableLayoutBoxProps {
   zIndex?: number;
   shadow?: string;
   radius?: number;
+  allowResize?: boolean;
 }
 
 function EditableLayoutBox({
   box, active, onSelect, onChange, previewScale,
   zIndex = 5, shadow = "0 10px 20px 0 rgba(0,0,0,0.40)", radius = PBOX_RADIUS,
-  interact = true,
+  interact = true, allowResize = true,
 }: EditableLayoutBoxProps & { interact?: boolean }) {
   const mode = useRef<"move" | "resize" | null>(null);
   const lastPos = useRef({ x: 0, y: 0 });
@@ -739,7 +1096,7 @@ function EditableLayoutBox({
           x: Math.round(latest.current.x + dx),
           y: Math.round(latest.current.y + dy),
         });
-      } else {
+      } else if (allowResize) {
         onChange({
           w: Math.max(40, Math.round(latest.current.w + dx)),
           h: Math.max(40, Math.round(latest.current.h + dy)),
@@ -753,7 +1110,7 @@ function EditableLayoutBox({
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [onChange, previewScale]);
+  }, [onChange, previewScale, allowResize]);
 
   return (
     <div
@@ -778,7 +1135,7 @@ function EditableLayoutBox({
         e.stopPropagation();
       }}
       onWheel={(e) => {
-        if (!interact || !active) return;
+        if (!interact || !active || !allowResize) return;
         e.preventDefault();
         e.stopPropagation();
         const f = e.deltaY < 0 ? 1.04 : 1 / 1.04;
@@ -788,7 +1145,7 @@ function EditableLayoutBox({
         });
       }}
     >
-      {active && interact && (
+      {active && interact && allowResize && (
         <div
           title="Ridimensiona"
           style={{
@@ -809,22 +1166,134 @@ function EditableLayoutBox({
   );
 }
 
+// ─── InlineBoxLine (freeform box text, Figma-like edit) ───────────────────────
+
+function InlineBoxLine({
+  line, x, y, maxWidth, selected, onSelect, onChangeText, onChangeSize,
+}: {
+  line: BoxLine;
+  x: number;
+  y: number;
+  maxWidth: number;
+  selected: boolean;
+  onSelect: () => void;
+  onChangeText: (text: string) => void;
+  onChangeSize: (size: number) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const editRef = useRef<HTMLDivElement>(null);
+  const startVal = useRef(line.text);
+
+  useEffect(() => {
+    if (!editing || !editRef.current) return;
+    editRef.current.textContent = startVal.current;
+    editRef.current.focus();
+    const range = document.createRange();
+    range.selectNodeContents(editRef.current);
+    const sel = window.getSelection();
+    sel?.removeAllRanges();
+    sel?.addRange(range);
+  }, [editing]);
+
+  const commit = () => {
+    if (!editing || !editRef.current) return;
+    const next = (editRef.current.innerText ?? "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\n$/, "");
+    onChangeText(next);
+    setEditing(false);
+  };
+
+  return (
+    <div
+      style={{
+        position: "absolute",
+        left: x,
+        top: y,
+        transform: textAlignTransform(line.align),
+        fontSize: line.size,
+        fontWeight: line.weight,
+        color: line.color,
+        letterSpacing: line.letterSpacing ? `${line.letterSpacing}px` : undefined,
+        lineHeight: 1.15,
+        textAlign: line.align,
+        whiteSpace: "pre",
+        zIndex: editing ? 20 : 8,
+        cursor: editing ? "text" : "pointer",
+        userSelect: editing ? "text" : "none",
+        outline: editing
+          ? "2px solid rgba(79,141,83,0.95)"
+          : selected
+            ? "2px dashed rgba(79,141,83,0.95)"
+            : "2px solid transparent",
+        outlineOffset: 4,
+        maxWidth,
+        pointerEvents: "auto",
+        minWidth: editing ? 24 : undefined,
+      }}
+      onClick={(e) => {
+        e.stopPropagation();
+        if (editing) return;
+        onSelect();
+      }}
+      onDoubleClick={(e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        onSelect();
+        startVal.current = line.text;
+        setEditing(true);
+      }}
+      onWheel={(e) => {
+        if (editing || !selected) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const delta = e.deltaY < 0 ? 2 : -2;
+        onChangeSize(Math.max(12, Math.min(120, line.size + delta)));
+      }}
+    >
+      {editing ? (
+        <div
+          ref={editRef}
+          contentEditable
+          suppressContentEditableWarning
+          style={{ outline: "none", whiteSpace: "pre-wrap", caretColor: line.color, minWidth: 20 }}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            e.stopPropagation();
+            if (e.key === "Escape") {
+              e.preventDefault();
+              setEditing(false);
+            } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+              e.preventDefault();
+              commit();
+            }
+          }}
+        />
+      ) : (
+        line.text || "Testo…"
+      )}
+    </div>
+  );
+}
+
 // ─── SlideCard ────────────────────────────────────────────────────────────────
 
 interface SlideCardProps {
   slide: Slide;
   slideH: number;
   fontFam: string;
-  textLayout: TextLayout;
-  logoBox: LayoutBox;
-  tesseratiBox: LayoutBox;
   activeEdit: ActiveEdit;
   onSetEdit: (e: ActiveEdit) => void;
+  selectedBoxLineId: string | null;
+  onSelectBoxLine: (id: string | null) => void;
+  onUpdateSlide: (patch: Partial<Slide>) => void;
   onUpdateBg: (t: ImgTransform) => void;
   onUpdateLogo: (t: ImgTransform) => void;
   onUpdateText: (key: TextKey, patch: Partial<TextStyle>) => void;
   onUpdateLogoBox: (patch: Partial<LayoutBox>) => void;
   onUpdateTesseratiBox: (patch: Partial<LayoutBox>) => void;
+  onUpdateListinoBox: (patch: Partial<LayoutBox>) => void;
+  onUpdateBoxLine: (id: string, patch: Partial<BoxLine>) => void;
   onUploadBg: (f: File) => void;
   onUploadLogo: (f: File) => void;
   onBgGestureStart?: () => void;
@@ -833,37 +1302,51 @@ interface SlideCardProps {
 }
 
 function SlideCard({
-  slide, slideH, fontFam, textLayout, logoBox, tesseratiBox, activeEdit, onSetEdit,
-  onUpdateBg, onUpdateLogo, onUpdateText, onUpdateLogoBox, onUpdateTesseratiBox,
+  slide, slideH, fontFam, activeEdit, onSetEdit,
+  selectedBoxLineId, onSelectBoxLine, onUpdateSlide,
+  onUpdateBg, onUpdateLogo, onUpdateText, onUpdateLogoBox, onUpdateTesseratiBox, onUpdateListinoBox,
+  onUpdateBoxLine,
   onUploadBg, onUploadLogo, onBgGestureStart, onLogoGestureStart, scale,
 }: SlideCardProps) {
   const ph  = photoRect(slideH);
-  const pb1 = pbox1Rect(slideH);
+  const { textLayout, logoBox, listinoBox, visibility: vis } = slide;
+  const boxPadding = slide.boxPadding ?? 36;
+  const tesseratiBox = slide.useBoxLines
+    ? fitTesseratiBoxToLines(slide.tesseratiBox, slide.boxLines, boxPadding, fontFam)
+    : slide.tesseratiBox;
   const ff = `"${fontFam}", sans-serif`;
-  // Photo pan/zoom is always on unless a layout item (text/box/logo) is selected
   const layoutItemSelected =
     isTextKey(activeEdit) ||
     activeEdit === "tesseratiBox" ||
+    activeEdit === "listinoBox" ||
     activeEdit === "logoBox" ||
-    activeEdit === "logo";
+    activeEdit === "logo" ||
+    !!selectedBoxLineId;
   const photoInteractive = !!slide.bg && !layoutItemSelected;
-  const logoDragging = useRef(false);
+  const logoMode = useRef<"move" | "resize" | null>(null);
   const logoLast = useRef({ x: 0, y: 0 });
   const logoLatest = useRef(logoBox);
   logoLatest.current = logoBox;
 
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
-      if (!logoDragging.current) return;
+      if (!logoMode.current) return;
       const dx = (e.clientX - logoLast.current.x) / scale;
       const dy = (e.clientY - logoLast.current.y) / scale;
       logoLast.current = { x: e.clientX, y: e.clientY };
-      onUpdateLogoBox({
-        x: Math.round(logoLatest.current.x + dx),
-        y: Math.round(logoLatest.current.y + dy),
-      });
+      if (logoMode.current === "move") {
+        onUpdateLogoBox({
+          x: Math.round(logoLatest.current.x + dx),
+          y: Math.round(logoLatest.current.y + dy),
+        });
+      } else {
+        onUpdateLogoBox({
+          w: Math.max(40, Math.round(logoLatest.current.w + dx)),
+          h: Math.max(40, Math.round(logoLatest.current.h + dy)),
+        });
+      }
     };
-    const onUp = () => { logoDragging.current = false; };
+    const onUp = () => { logoMode.current = null; };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
     return () => {
@@ -881,9 +1364,8 @@ function SlideCard({
         overflow: photoInteractive ? "visible" : "hidden",
         flexShrink: 0,
       }}
-      onClick={() => { if (activeEdit) onSetEdit(null); }}
+      onClick={() => { if (activeEdit) onSetEdit(null); onSelectBoxLine(null); }}
     >
-      {/* Crown — white PNG on green background */}
       <img
         src={simboloPSC} alt=""
         style={{
@@ -894,7 +1376,6 @@ function SlideCard({
         }}
       />
 
-      {/* Photo — pan/zoom always on; layout items use pointer-events only when selected */}
       <div
         style={{
           position: "absolute",
@@ -918,99 +1399,153 @@ function SlideCard({
         />
       </div>
 
-      {/* PBOX1 — wide/short (back), soft shadow */}
-      <div style={{
-        position: "absolute",
-        left: pb1.l, top: pb1.t, width: pb1.w, height: pb1.h,
-        background: "white", borderRadius: PBOX_RADIUS,
-        boxShadow: "0 10px 10px 0 rgba(0,0,0,0.25)",
-        zIndex: 4, pointerEvents: "none",
-      }} />
+      {vis.listinoBox && (
+        <EditableLayoutBox
+          box={listinoBox}
+          active={activeEdit === "listinoBox"}
+          onSelect={() => onSetEdit(activeEdit === "listinoBox" ? null : "listinoBox")}
+          onChange={onUpdateListinoBox}
+          previewScale={scale}
+          zIndex={4}
+          shadow="0 10px 10px 0 rgba(0,0,0,0.25)"
+          interact={activeEdit === "listinoBox"}
+        />
+      )}
 
-      {/* PBOX2 — narrow/tall (front), stronger shadow */}
       <EditableLayoutBox
         box={tesseratiBox}
         active={activeEdit === "tesseratiBox"}
         onSelect={() => onSetEdit(activeEdit === "tesseratiBox" ? null : "tesseratiBox")}
-        onChange={onUpdateTesseratiBox}
+        onChange={(patch) => {
+          if (slide.useBoxLines) {
+            // Keep auto size; only persist position (and sync fitted w/h)
+            onUpdateTesseratiBox({
+              x: patch.x ?? tesseratiBox.x,
+              y: patch.y ?? tesseratiBox.y,
+              w: tesseratiBox.w,
+              h: tesseratiBox.h,
+            });
+          } else {
+            onUpdateTesseratiBox(patch);
+          }
+        }}
         previewScale={scale}
         zIndex={5}
         interact={activeEdit === "tesseratiBox"}
+        allowResize={!slide.useBoxLines}
       />
 
-      <EditableText
-        textKey="descrizione" style={textLayout.descrizione}
-        active={activeEdit === "descrizione"}
-        onSelect={() => onSetEdit("descrizione")}
-        onChange={(p) => onUpdateText("descrizione", p)}
-        previewScale={scale} color="white" fontWeight={700}
-        interact={activeEdit === "descrizione"}
-      >
-        {slide.descrizione || "Descrizione prodotto"}
-      </EditableText>
+      {vis.descrizione && (
+        <EditableText
+          textKey="descrizione" style={textLayout.descrizione}
+          active={activeEdit === "descrizione"}
+          onSelect={() => { onSelectBoxLine(null); onSetEdit("descrizione"); }}
+          onChange={(p) => onUpdateText("descrizione", p)}
+          previewScale={scale} color="white" fontWeight={700}
+          value={slide.descrizione}
+          onValueChange={(v) => onUpdateSlide({ descrizione: v })}
+          placeholder="Descrizione prodotto"
+          multiline
+        />
+      )}
 
-      <EditableText
-        textKey="labelTesserati" style={textLayout.labelTesserati}
-        active={activeEdit === "labelTesserati"}
-        onSelect={() => onSetEdit("labelTesserati")}
-        onChange={(p) => onUpdateText("labelTesserati", p)}
-        previewScale={scale} color={GREEN} fontWeight={600}
-        interact={activeEdit === "labelTesserati"}
-      >
-        Prezzo Tesserati
-      </EditableText>
+      {slide.useBoxLines ? (
+        boxLinePositions(tesseratiBox, slide.boxLines, 8, boxPadding).map(({ line, x, y }) => (
+          <InlineBoxLine
+            key={line.id}
+            line={line}
+            x={x}
+            y={y}
+            maxWidth={Math.max(40, tesseratiBox.w - boxPadding * 2)}
+            selected={selectedBoxLineId === line.id}
+            onSelect={() => {
+              onSetEdit(null);
+              onSelectBoxLine(selectedBoxLineId === line.id ? null : line.id);
+            }}
+            onChangeText={(text) => onUpdateBoxLine(line.id, { text })}
+            onChangeSize={(size) => onUpdateBoxLine(line.id, { size })}
+          />
+        ))
+      ) : (
+        <>
+          {vis.labelTesserati && (
+            <EditableText
+              textKey="labelTesserati" style={textLayout.labelTesserati}
+              active={activeEdit === "labelTesserati"}
+              onSelect={() => { onSelectBoxLine(null); onSetEdit("labelTesserati"); }}
+              onChange={(p) => onUpdateText("labelTesserati", p)}
+              previewScale={scale} color={GREEN} fontWeight={600}
+              value={slide.labelTesseratiText}
+              onValueChange={(v) => onUpdateSlide({ labelTesseratiText: v })}
+              placeholder="Prezzo Tesserati"
+              multiline
+            />
+          )}
 
-      <EditableText
-        textKey="prezzoTesserati" style={textLayout.prezzoTesserati}
-        active={activeEdit === "prezzoTesserati"}
-        onSelect={() => onSetEdit("prezzoTesserati")}
-        onChange={(p) => onUpdateText("prezzoTesserati", p)}
-        previewScale={scale} color={GREEN} fontWeight={700} letterSpacing="-1px"
-        interact={activeEdit === "prezzoTesserati"}
-      >
-        {slide.prezzoTesserati ? `${slide.prezzoTesserati}€` : "0,00€"}
-      </EditableText>
+          {vis.prezzoTesserati && (
+            <EditableText
+              textKey="prezzoTesserati" style={textLayout.prezzoTesserati}
+              active={activeEdit === "prezzoTesserati"}
+              onSelect={() => { onSelectBoxLine(null); onSetEdit("prezzoTesserati"); }}
+              onChange={(p) => onUpdateText("prezzoTesserati", p)}
+              previewScale={scale} color={GREEN} fontWeight={700} letterSpacing="-1px"
+              value={slide.prezzoTesserati}
+              onValueChange={(v) => onUpdateSlide({ prezzoTesserati: cleanPrice(v) })}
+              displayValue={slide.prezzoTesserati ? `${slide.prezzoTesserati}€` : "0,00€"}
+              placeholder="0,00"
+            />
+          )}
+        </>
+      )}
 
-      <EditableText
-        textKey="labelListino" style={textLayout.labelListino}
-        active={activeEdit === "labelListino"}
-        onSelect={() => onSetEdit("labelListino")}
-        onChange={(p) => onUpdateText("labelListino", p)}
-        previewScale={scale} color="#b7b7b7" fontWeight={400}
-        interact={activeEdit === "labelListino"}
-      >
-        {"Prezzo\ndi listino"}
-      </EditableText>
+      {vis.labelListino && (
+        <EditableText
+          textKey="labelListino" style={textLayout.labelListino}
+          active={activeEdit === "labelListino"}
+          onSelect={() => { onSelectBoxLine(null); onSetEdit("labelListino"); }}
+          onChange={(p) => onUpdateText("labelListino", p)}
+          previewScale={scale} color="#b7b7b7" fontWeight={400}
+          value={slide.labelListinoText}
+          onValueChange={(v) => onUpdateSlide({ labelListinoText: v })}
+          placeholder={"Prezzo\ndi listino"}
+          multiline
+        />
+      )}
 
-      <EditableText
-        textKey="prezzoListino" style={textLayout.prezzoListino}
-        active={activeEdit === "prezzoListino"}
-        onSelect={() => onSetEdit("prezzoListino")}
-        onChange={(p) => onUpdateText("prezzoListino", p)}
-        previewScale={scale} color="#b7b7b7" fontWeight={400}
-        interact={activeEdit === "prezzoListino"}
-      >
-        {slide.prezzoListino ? `${slide.prezzoListino}€` : "0,00€"}
-      </EditableText>
+      {vis.prezzoListino && (
+        <EditableText
+          textKey="prezzoListino" style={textLayout.prezzoListino}
+          active={activeEdit === "prezzoListino"}
+          onSelect={() => { onSelectBoxLine(null); onSetEdit("prezzoListino"); }}
+          onChange={(p) => onUpdateText("prezzoListino", p)}
+          previewScale={scale} color="#b7b7b7" fontWeight={400}
+          value={slide.prezzoListino}
+          onValueChange={(v) => onUpdateSlide({ prezzoListino: cleanPrice(v) })}
+          displayValue={slide.prezzoListino ? `${slide.prezzoListino}€` : "0,00€"}
+          placeholder="0,00"
+        />
+      )}
 
-      <EditableText
-        textKey="sconto" style={textLayout.sconto}
-        active={activeEdit === "sconto"}
-        onSelect={() => onSetEdit("sconto")}
-        onChange={(p) => onUpdateText("sconto", p)}
-        previewScale={scale} color="white" fontWeight={400} letterSpacing="-2px"
-        interact={activeEdit === "sconto"}
-      >
-        {slide.sconto || "-50%"}
-      </EditableText>
+      {vis.sconto && (
+        <EditableText
+          textKey="sconto" style={textLayout.sconto}
+          active={activeEdit === "sconto"}
+          onSelect={() => { onSelectBoxLine(null); onSetEdit("sconto"); }}
+          onChange={(p) => onUpdateText("sconto", p)}
+          previewScale={scale} color="white" fontWeight={400} letterSpacing="-2px"
+          value={slide.sconto}
+          onValueChange={(v) => onUpdateSlide({ sconto: v })}
+          placeholder="-50%"
+        />
+      )}
 
-      {/* Logo box (top-right) */}
       <div
         style={{
           position: "absolute",
           left: logoBox.x, top: logoBox.y, width: logoBox.w, height: logoBox.h,
-          background: "white", borderRadius: LOGO_RADIUS,
-          boxShadow: "0 6px 20px rgba(0,0,0,0.18)",
+          background: vis.logoBoxBg ? "white" : "transparent",
+          borderRadius: LOGO_RADIUS,
+          boxShadow: vis.logoBoxBg ? "0 6px 20px rgba(0,0,0,0.18)" : undefined,
           overflow: "hidden", zIndex: 10,
           cursor: activeEdit === "logoBox" ? "grab" : activeEdit === "logo" ? "grab" : "pointer",
           outline: activeEdit === "logoBox" ? "2px dashed rgba(79,141,83,0.95)" : undefined,
@@ -1023,10 +1558,20 @@ function SlideCard({
         }}
         onMouseDown={(e) => {
           if (activeEdit !== "logoBox") return;
-          logoDragging.current = true;
+          logoMode.current = "move";
           logoLast.current = { x: e.clientX, y: e.clientY };
           e.preventDefault();
           e.stopPropagation();
+        }}
+        onWheel={(e) => {
+          if (activeEdit !== "logoBox") return;
+          e.preventDefault();
+          e.stopPropagation();
+          const f = e.deltaY < 0 ? 1.04 : 1 / 1.04;
+          onUpdateLogoBox({
+            w: Math.max(40, Math.round(logoLatest.current.w * f)),
+            h: Math.max(40, Math.round(logoLatest.current.h * f)),
+          });
         }}
       >
         <DraggableImage
@@ -1035,6 +1580,24 @@ function SlideCard({
           objectFit="contain" previewScale={scale}
           onGestureStart={onLogoGestureStart}
         />
+        {activeEdit === "logoBox" && (
+          <div
+            title="Ridimensiona"
+            style={{
+              position: "absolute", right: 2, bottom: 2,
+              width: 14, height: 14, borderRadius: 2,
+              background: GREEN, cursor: "nwse-resize",
+              boxShadow: "0 0 0 2px white",
+              zIndex: 2,
+            }}
+            onMouseDown={(e) => {
+              logoMode.current = "resize";
+              logoLast.current = { x: e.clientX, y: e.clientY };
+              e.preventDefault();
+              e.stopPropagation();
+            }}
+          />
+        )}
       </div>
     </div>
   );
@@ -1048,14 +1611,12 @@ export default function App() {
   const [slideH, setSlideH]         = useState(DEFAULT_H);
   const [activeEdit, setActiveEdit] = useState<ActiveEdit>(null);
   const fontFam = "Sansumi";
-  const [textLayout, setTextLayout] = useState<TextLayout>(() => defaultTextLayout());
-  const [logoBox, setLogoBox]       = useState<LayoutBox>(() => defaultLogoBox());
-  const [tesseratiBox, setTesseratiBox] = useState<LayoutBox>(() => defaultTesseratiBox());
   const [pasteText, setPasteText]   = useState("");
   const [importMsg, setImportMsg]   = useState("");
   const [previewScale, setPreviewScale] = useState(0.65);
   const [exporting, setExporting]   = useState(false);
   const [copiedLayout, setCopiedLayout] = useState(false);
+  const [selectedBoxLineId, setSelectedBoxLineId] = useState<string | null>(null);
   const previewRef = useRef<HTMLDivElement>(null);
   const bgUndo = useRef<ImgTransform[]>([]);
   const bgRedo = useRef<ImgTransform[]>([]);
@@ -1082,6 +1643,7 @@ export default function App() {
     bgRedo.current = [];
     logoUndo.current = [];
     logoRedo.current = [];
+    setSelectedBoxLineId(null);
   }, [slide.id]);
 
   const appendSlides = (imported: Slide[]) => {
@@ -1164,16 +1726,98 @@ export default function App() {
   }, [undoImage, redoImage]);
 
   const updateText = useCallback((key: TextKey, patch: Partial<TextStyle>) => {
-    setTextLayout((prev) => ({ ...prev, [key]: { ...prev[key], ...patch } }));
-  }, []);
+    setSlides((prev) => prev.map((s, i) => {
+      if (i !== current) return s;
+      return { ...s, textLayout: { ...s.textLayout, [key]: { ...s.textLayout[key], ...patch } } };
+    }));
+  }, [current]);
 
   const updateLogoBox = useCallback((patch: Partial<LayoutBox>) => {
-    setLogoBox((prev) => ({ ...prev, ...patch }));
-  }, []);
+    setSlides((prev) => prev.map((s, i) => i === current ? { ...s, logoBox: { ...s.logoBox, ...patch } } : s));
+  }, [current]);
 
   const updateTesseratiBox = useCallback((patch: Partial<LayoutBox>) => {
-    setTesseratiBox((prev) => ({ ...prev, ...patch }));
-  }, []);
+    setSlides((prev) => prev.map((s, i) => i === current ? { ...s, tesseratiBox: { ...s.tesseratiBox, ...patch } } : s));
+  }, [current]);
+
+  const updateListinoBox = useCallback((patch: Partial<LayoutBox>) => {
+    setSlides((prev) => prev.map((s, i) => i === current ? { ...s, listinoBox: { ...s.listinoBox, ...patch } } : s));
+  }, [current]);
+
+  const updateVisibility = useCallback((patch: Partial<SlideVisibility>) => {
+    setSlides((prev) => prev.map((s, i) => i === current ? { ...s, visibility: { ...s.visibility, ...patch } } : s));
+  }, [current]);
+
+  const applyPreset = useCallback((preset: LayoutPreset) => {
+    const layout = layoutFromPreset(preset);
+    setSlides((prev) => prev.map((s, i) => {
+      if (i !== current) return s;
+      if (preset === "singleCenter") {
+        return {
+          ...s,
+          ...layout,
+          boxLines: s.boxLines.length ? s.boxLines : layout.boxLines,
+        };
+      }
+      return { ...s, ...layout, useBoxLines: false };
+    }));
+    setActiveEdit(null);
+    setSelectedBoxLineId(null);
+  }, [current]);
+
+  const updateBoxLine = useCallback((id: string, patch: Partial<BoxLine>) => {
+    setSlides((prev) => prev.map((s, i) => {
+      if (i !== current) return s;
+      return {
+        ...s,
+        boxLines: s.boxLines.map((line) => line.id === id ? { ...line, ...patch } : line),
+      };
+    }));
+  }, [current]);
+
+  const addBoxLine = useCallback(() => {
+    const line = mkBoxLine({ text: "Nuova riga", size: 28, weight: 600, color: GREEN });
+    setSlides((prev) => prev.map((s, i) => i === current ? { ...s, boxLines: [...s.boxLines, line], useBoxLines: true } : s));
+    setSelectedBoxLineId(line.id);
+  }, [current]);
+
+  const removeBoxLine = useCallback((id: string) => {
+    setSlides((prev) => prev.map((s, i) => {
+      if (i !== current) return s;
+      return { ...s, boxLines: s.boxLines.filter((l) => l.id !== id) };
+    }));
+    setSelectedBoxLineId((cur) => cur === id ? null : cur);
+  }, [current]);
+
+  const moveBoxLine = useCallback((id: string, dir: -1 | 1) => {
+    setSlides((prev) => prev.map((s, i) => {
+      if (i !== current) return s;
+      const idx = s.boxLines.findIndex((l) => l.id === id);
+      const j = idx + dir;
+      if (idx < 0 || j < 0 || j >= s.boxLines.length) return s;
+      const next = [...s.boxLines];
+      [next[idx], next[j]] = [next[j], next[idx]];
+      return { ...s, boxLines: next };
+    }));
+  }, [current]);
+
+  const setUseBoxLines = useCallback((on: boolean) => {
+    setSlides((prev) => prev.map((s, i) => {
+      if (i !== current) return s;
+      if (!on) return { ...s, useBoxLines: false };
+      return {
+        ...s,
+        useBoxLines: true,
+        boxLines: s.boxLines.length ? s.boxLines : defaultSingleCenterBoxLines(),
+        visibility: {
+          ...s.visibility,
+          labelTesserati: false,
+          prezzoTesserati: false,
+        },
+      };
+    }));
+    if (!on) setSelectedBoxLineId(null);
+  }, [current]);
 
   const uploadImage = async (file: File, key: "bg" | "logo") => {
     const src = await fileToDataUrl(file);
@@ -1183,7 +1827,14 @@ export default function App() {
   };
 
   const copyLayoutValues = async () => {
-    const payload = JSON.stringify({ slideHeight: slideH, textLayout, logoBox, tesseratiBox }, null, 2);
+    const payload = JSON.stringify({
+      slideHeight: slideH,
+      textLayout: slide.textLayout,
+      logoBox: slide.logoBox,
+      tesseratiBox: slide.tesseratiBox,
+      listinoBox: slide.listinoBox,
+      visibility: slide.visibility,
+    }, null, 2);
     try {
       await navigator.clipboard.writeText(payload);
       setCopiedLayout(true);
@@ -1228,7 +1879,7 @@ export default function App() {
   };
 
   const saveProject = () => {
-    const project = { version: 1, slideHeight: slideH, fontFamily: fontFam, textLayout, logoBox, tesseratiBox, slides };
+    const project = { version: 2, slideHeight: slideH, fontFamily: fontFam, slides };
     const blob = new Blob([JSON.stringify(project)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a"); a.href = url; a.download = "progetto-slide.json"; a.click();
@@ -1239,25 +1890,29 @@ export default function App() {
     try {
       const project = JSON.parse(await file.text());
       if (!Array.isArray(project.slides)) throw new Error();
-      setSlides(project.slides);
+      const fallback = {
+        textLayout: project.textLayout ? mergeTextLayout(project.textLayout) : undefined,
+        logoBox: project.logoBox,
+        tesseratiBox: project.tesseratiBox,
+        listinoBox: project.listinoBox,
+        visibility: project.visibility,
+      };
+      setSlides(project.slides.map((raw: any) => normalizeSlide(raw, fallback)));
       if (project.slideHeight) setSlideH(project.slideHeight);
-      if (project.textLayout) setTextLayout(mergeTextLayout(project.textLayout));
-      if (project.logoBox) setLogoBox({ ...defaultLogoBox(), ...project.logoBox });
-      if (project.tesseratiBox) setTesseratiBox({ ...defaultTesseratiBox(), ...project.tesseratiBox });
       setCurrent(0); setActiveEdit(null);
     } catch { alert("Errore nel caricamento del progetto."); }
   };
 
   const handleExport = async () => {
     setExporting(true);
-    try { await exportSlide(slide, slideH, fontFam, textLayout, logoBox, tesseratiBox); } finally { setExporting(false); }
+    try { await exportSlide(slide, slideH, fontFam); } finally { setExporting(false); }
   };
 
   const handleExportAll = async () => {
     setExporting(true);
     try {
       for (const s of slides) {
-        await exportSlide(s, slideH, fontFam, textLayout, logoBox, tesseratiBox);
+        await exportSlide(s, slideH, fontFam);
         await new Promise((r) => setTimeout(r, 400));
       }
     } finally { setExporting(false); }
@@ -1268,8 +1923,10 @@ export default function App() {
     !!slide.bg &&
     !isTextKey(activeEdit) &&
     activeEdit !== "tesseratiBox" &&
+    activeEdit !== "listinoBox" &&
     activeEdit !== "logoBox" &&
-    activeEdit !== "logo";
+    activeEdit !== "logo" &&
+    !selectedBoxLineId;
 
   // ─── Render ──────────────────────────────────────────────────────────────────
 
@@ -1343,15 +2000,17 @@ export default function App() {
         }}>
           <SlideCard
             slide={slide} slideH={slideH} fontFam={fontFam}
-            textLayout={textLayout}
-            logoBox={logoBox}
-            tesseratiBox={tesseratiBox}
             activeEdit={activeEdit} onSetEdit={setActiveEdit}
+            selectedBoxLineId={selectedBoxLineId}
+            onSelectBoxLine={setSelectedBoxLineId}
+            onUpdateSlide={updateSlide}
             onUpdateBg={(t) => updateSlide({ bg: t })}
             onUpdateLogo={(t) => updateSlide({ logo: t })}
             onUpdateText={updateText}
             onUpdateLogoBox={updateLogoBox}
             onUpdateTesseratiBox={updateTesseratiBox}
+            onUpdateListinoBox={updateListinoBox}
+            onUpdateBoxLine={updateBoxLine}
             onUploadBg={(f) => uploadImage(f, "bg")}
             onUploadLogo={(f) => uploadImage(f, "logo")}
             onBgGestureStart={pushBgUndo}
@@ -1359,17 +2018,17 @@ export default function App() {
             scale={previewScale}
           />
         </div>
-        {(photoMode || activeEdit) && (
+        {(photoMode || activeEdit || selectedBoxLineId) && (
           <div
             className="absolute bottom-5 left-1/2 -translate-x-1/2 flex items-center gap-2 px-4 py-2 rounded-full text-xs text-white"
             style={{ background: "rgba(0,0,0,0.72)", backdropFilter: "blur(8px)", zIndex: 30 }}
           >
-            <Move size={12} /> Trascina
-            {isTextKey(activeEdit)
-              ? <>&nbsp;·&nbsp; <ZoomIn size={12} /> Scroll = size</>
-              : activeEdit === "logoBox" || activeEdit === "tesseratiBox"
+            <Move size={12} /> Click = seleziona · Doppio click = modifica testo
+            {isTextKey(activeEdit) || selectedBoxLineId
+              ? <>&nbsp;·&nbsp; <ZoomIn size={12} /> Scroll = size · Trascina = sposta</>
+              : activeEdit === "logoBox" || activeEdit === "tesseratiBox" || activeEdit === "listinoBox"
                 ? <>&nbsp;·&nbsp; angolo = resize · scroll = scale</>
-                : <>&nbsp;·&nbsp; <ZoomIn size={12} /> Scroll = zoom · Ctrl/⌘Z = undo</>}
+                : photoMode ? <>&nbsp;·&nbsp; <ZoomIn size={12} /> Scroll = zoom · Ctrl/⌘Z = undo</> : null}
             {!photoMode && activeEdit && slide.bg && <>&nbsp;·&nbsp; Click foto per tornare al pan</>}
           </div>
         )}
@@ -1440,7 +2099,46 @@ export default function App() {
           <p style={{ fontSize: 10, color: "#ccc", margin: 0 }}>Larghezza fissa: 800px</p>
         </Section>
 
-        <Section label="Layout testi">
+        <Section label="Layout slide">
+          <div className="flex gap-1">
+            {(["standard", "singleCenter"] as LayoutPreset[]).map((preset) => (
+              <button
+                key={preset}
+                type="button"
+                className="flex-1 px-2 py-1.5 rounded text-[10px] border font-medium"
+                style={{ borderColor: "#e4e4e8", color: "#444" }}
+                onClick={() => applyPreset(preset)}
+              >
+                {PRESET_LABELS[preset]}
+              </button>
+            ))}
+          </div>
+          <p style={{ fontSize: 10, color: "#ccc", lineHeight: 1.4, margin: 0 }}>
+            Il preset vale solo per la slide corrente. Poi puoi muovere/nascondere tutto.
+          </p>
+
+          <div className="flex flex-col gap-1.5">
+            <span style={{ fontSize: 10, color: "#aaa", textTransform: "uppercase" }}>Visibilità</span>
+            {([
+              ["logoBoxBg", "Box bianco logo"],
+              ["listinoBox", "Box listino"],
+              ["labelListino", "Label listino"],
+              ["prezzoListino", "Prezzo listino"],
+              ["sconto", "Sconto"],
+              ["descrizione", "Descrizione"],
+            ] as const).map(([key, label]) => (
+              <label key={key} className="flex items-center justify-between gap-2 text-xs" style={{ color: "#555" }}>
+                <span>{label}</span>
+                <input
+                  type="checkbox"
+                  checked={slide.visibility[key]}
+                  onChange={(e) => updateVisibility({ [key]: e.target.checked })}
+                  style={{ accentColor: GREEN }}
+                />
+              </label>
+            ))}
+          </div>
+
           <div className="flex flex-wrap gap-1">
             {TEXT_KEYS.map((key) => (
               <button
@@ -1450,7 +2148,7 @@ export default function App() {
                 style={
                   selectedText === key
                     ? { background: "#edf7ee", borderColor: GREEN, color: GREEN }
-                    : { borderColor: "#e4e4e8", color: "#666" }
+                    : { borderColor: "#e4e4e8", color: "#666", opacity: slide.visibility[key as keyof SlideVisibility] === false ? 0.4 : 1 }
                 }
                 onClick={() => setActiveEdit(selectedText === key ? null : key)}
               >
@@ -1481,6 +2179,20 @@ export default function App() {
             >
               Box Tesserati
             </button>
+            {slide.visibility.listinoBox && (
+              <button
+                type="button"
+                className="px-2 py-1 rounded text-[10px] border transition-colors"
+                style={
+                  activeEdit === "listinoBox"
+                    ? { background: "#edf7ee", borderColor: GREEN, color: GREEN }
+                    : { borderColor: "#e4e4e8", color: "#666" }
+                }
+                onClick={() => setActiveEdit(activeEdit === "listinoBox" ? null : "listinoBox")}
+              >
+                Box Listino
+              </button>
+            )}
           </div>
           {selectedText && (
             <div className="flex flex-col gap-2">
@@ -1492,10 +2204,27 @@ export default function App() {
                       type="number"
                       className="w-full px-2 py-1 text-xs border rounded font-mono outline-none"
                       style={{ borderColor: "#e4e4e8" }}
-                      value={textLayout[selectedText][field]}
+                      value={slide.textLayout[selectedText][field]}
                       onChange={(e) => updateText(selectedText, { [field]: Number(e.target.value) })}
                     />
                   </label>
+                ))}
+              </div>
+              <div className="flex gap-1">
+                {(["left", "center", "right"] as TextAlign[]).map((align) => (
+                  <button
+                    key={align}
+                    type="button"
+                    className="flex-1 px-2 py-1 rounded text-[10px] border"
+                    style={
+                      slide.textLayout[selectedText].align === align
+                        ? { background: "#edf7ee", borderColor: GREEN, color: GREEN }
+                        : { borderColor: "#e4e4e8", color: "#666" }
+                    }
+                    onClick={() => updateText(selectedText, { align })}
+                  >
+                    {align === "left" ? "Sinistra" : align === "center" ? "Centro" : "Destra"}
+                  </button>
                 ))}
               </div>
               <input
@@ -1503,7 +2232,7 @@ export default function App() {
                 min={8}
                 max={220}
                 step={1}
-                value={textLayout[selectedText].size}
+                value={slide.textLayout[selectedText].size}
                 className="w-full"
                 style={{ accentColor: GREEN }}
                 onChange={(e) => updateText(selectedText, { size: Number(e.target.value) })}
@@ -1514,14 +2243,14 @@ export default function App() {
                   <label className="flex flex-col gap-0.5">
                     <div className="flex justify-between">
                       <span style={{ fontSize: 10, color: "#888" }}>Blur</span>
-                      <span className="font-mono" style={{ fontSize: 10, color: "#666" }}>{textLayout[selectedText].shadowBlur}px</span>
+                      <span className="font-mono" style={{ fontSize: 10, color: "#666" }}>{slide.textLayout[selectedText].shadowBlur}px</span>
                     </div>
                     <input
                       type="range"
                       min={0}
                       max={60}
                       step={1}
-                      value={textLayout[selectedText].shadowBlur}
+                      value={slide.textLayout[selectedText].shadowBlur}
                       className="w-full"
                       style={{ accentColor: GREEN }}
                       onChange={(e) => updateText(selectedText, { shadowBlur: Number(e.target.value) })}
@@ -1530,14 +2259,14 @@ export default function App() {
                   <label className="flex flex-col gap-0.5">
                     <div className="flex justify-between">
                       <span style={{ fontSize: 10, color: "#888" }}>Opacità</span>
-                      <span className="font-mono" style={{ fontSize: 10, color: "#666" }}>{Math.round(textLayout[selectedText].shadowOpacity * 100)}%</span>
+                      <span className="font-mono" style={{ fontSize: 10, color: "#666" }}>{Math.round(slide.textLayout[selectedText].shadowOpacity * 100)}%</span>
                     </div>
                     <input
                       type="range"
                       min={0}
                       max={100}
                       step={1}
-                      value={Math.round(textLayout[selectedText].shadowOpacity * 100)}
+                      value={Math.round(slide.textLayout[selectedText].shadowOpacity * 100)}
                       className="w-full"
                       style={{ accentColor: GREEN }}
                       onChange={(e) => updateText(selectedText, { shadowOpacity: Number(e.target.value) / 100 })}
@@ -1546,14 +2275,14 @@ export default function App() {
                   <label className="flex flex-col gap-0.5">
                     <div className="flex justify-between">
                       <span style={{ fontSize: 10, color: "#888" }}>Offset Y</span>
-                      <span className="font-mono" style={{ fontSize: 10, color: "#666" }}>{textLayout[selectedText].shadowOffsetY}px</span>
+                      <span className="font-mono" style={{ fontSize: 10, color: "#666" }}>{slide.textLayout[selectedText].shadowOffsetY}px</span>
                     </div>
                     <input
                       type="range"
                       min={-20}
                       max={40}
                       step={1}
-                      value={textLayout[selectedText].shadowOffsetY}
+                      value={slide.textLayout[selectedText].shadowOffsetY}
                       className="w-full"
                       style={{ accentColor: GREEN }}
                       onChange={(e) => updateText(selectedText, { shadowOffsetY: Number(e.target.value) })}
@@ -1563,7 +2292,7 @@ export default function App() {
               )}
             </div>
           )}
-          {(activeEdit === "logoBox" || activeEdit === "tesseratiBox") && (
+          {(activeEdit === "logoBox" || activeEdit === "tesseratiBox" || activeEdit === "listinoBox") && (
             <div className="grid grid-cols-2 gap-2">
               {(["x", "y", "w", "h"] as const).map((field) => (
                 <label key={field} className="flex flex-col gap-0.5">
@@ -1572,10 +2301,17 @@ export default function App() {
                     type="number"
                     className="w-full px-2 py-1 text-xs border rounded font-mono outline-none"
                     style={{ borderColor: "#e4e4e8" }}
-                    value={(activeEdit === "logoBox" ? logoBox : tesseratiBox)[field]}
+                    value={
+                      activeEdit === "logoBox"
+                        ? slide.logoBox[field]
+                        : activeEdit === "listinoBox"
+                          ? slide.listinoBox[field]
+                          : slide.tesseratiBox[field]
+                    }
                     onChange={(e) => {
                       const v = Number(e.target.value);
                       if (activeEdit === "logoBox") updateLogoBox({ [field]: v });
+                      else if (activeEdit === "listinoBox") updateListinoBox({ [field]: v });
                       else updateTesseratiBox({ [field]: v });
                     }}
                   />
@@ -1588,12 +2324,7 @@ export default function App() {
               type="button"
               className="flex-1 flex items-center justify-center gap-1 px-2 py-1.5 rounded border text-xs"
               style={{ borderColor: "#e2e2e6", color: "#555" }}
-              onClick={() => {
-                setTextLayout(defaultTextLayout());
-                setLogoBox(defaultLogoBox());
-                setTesseratiBox(defaultTesseratiBox());
-                setActiveEdit(null);
-              }}
+              onClick={() => applyPreset("standard")}
             >
               <RefreshCcw size={11} /> Reset layout
             </button>
@@ -1607,8 +2338,160 @@ export default function App() {
             </button>
           </div>
           <p style={{ fontSize: 10, color: "#ccc", lineHeight: 1.4, margin: 0 }}>
-            Seleziona un chip per muovere testi/box. Sulla foto: pan e zoom subito, senza click.
+            Seleziona un chip per muovere testi/box. Allineamento e visibilità sono per slide.
           </p>
+        </Section>
+
+        <Section label="Testi nel box">
+          <label className="flex items-center justify-between gap-2 text-xs" style={{ color: "#555" }}>
+            <span>Editor righe libere</span>
+            <input
+              type="checkbox"
+              checked={slide.useBoxLines}
+              onChange={(e) => setUseBoxLines(e.target.checked)}
+              style={{ accentColor: GREEN }}
+            />
+          </label>
+          <p style={{ fontSize: 10, color: "#ccc", lineHeight: 1.4, margin: 0 }}>
+            Ideale per Box singolo: ogni riga ha testo, size e spessore propri.
+          </p>
+          {slide.useBoxLines && (
+            <div className="flex flex-col gap-2">
+              <label className="flex flex-col gap-0.5">
+                <div className="flex justify-between">
+                  <span style={{ fontSize: 10, color: "#888" }}>Margin box</span>
+                  <span className="font-mono" style={{ fontSize: 10, color: "#666" }}>{slide.boxPadding ?? 36}px</span>
+                </div>
+                <input
+                  type="range"
+                  min={8}
+                  max={80}
+                  step={1}
+                  value={slide.boxPadding ?? 36}
+                  className="w-full"
+                  style={{ accentColor: GREEN }}
+                  onChange={(e) => updateSlide({ boxPadding: Number(e.target.value) })}
+                />
+              </label>
+              <p style={{ fontSize: 10, color: "#ccc", lineHeight: 1.4, margin: 0 }}>
+                Il box bianco si adatta alle scritte + questo margin.
+              </p>
+              {slide.boxLines.map((line, idx) => {
+                const selected = selectedBoxLineId === line.id;
+                return (
+                  <div
+                    key={line.id}
+                    className="flex flex-col gap-1.5 p-2 rounded border"
+                    style={{
+                      borderColor: selected ? GREEN : "#e8e8ec",
+                      background: selected ? "#f7fbf7" : "#fafafa",
+                    }}
+                    onClick={() => setSelectedBoxLineId(line.id)}
+                  >
+                    <div className="flex items-center justify-between gap-1">
+                      <span style={{ fontSize: 10, color: "#aaa" }}>Riga {idx + 1}</span>
+                      <div className="flex gap-0.5">
+                        <button type="button" className="px-1.5 py-0.5 text-[10px] border rounded" style={{ borderColor: "#e4e4e8" }} onClick={(e) => { e.stopPropagation(); moveBoxLine(line.id, -1); }}>↑</button>
+                        <button type="button" className="px-1.5 py-0.5 text-[10px] border rounded" style={{ borderColor: "#e4e4e8" }} onClick={(e) => { e.stopPropagation(); moveBoxLine(line.id, 1); }}>↓</button>
+                        <button type="button" className="px-1.5 py-0.5 text-[10px] border rounded" style={{ borderColor: "#e4e4e8", color: "#c44" }} onClick={(e) => { e.stopPropagation(); removeBoxLine(line.id); }}>✕</button>
+                      </div>
+                    </div>
+                    <input
+                      className="w-full px-2 py-1 text-xs border rounded outline-none"
+                      style={{ borderColor: "#e4e4e8" }}
+                      value={line.text}
+                      onChange={(e) => updateBoxLine(line.id, { text: e.target.value })}
+                      placeholder="Testo riga"
+                    />
+                    <div className="flex items-center gap-2">
+                      <span style={{ fontSize: 10, color: "#888", width: 36 }}>Size</span>
+                      <input
+                        type="range" min={12} max={120} step={1}
+                        value={line.size} className="flex-1" style={{ accentColor: GREEN }}
+                        onChange={(e) => updateBoxLine(line.id, { size: Number(e.target.value) })}
+                      />
+                      <span className="font-mono w-8 text-right" style={{ fontSize: 10, color: "#666" }}>{line.size}</span>
+                    </div>
+                    <div className="flex gap-1">
+                      {([400, 600, 700] as const).map((w) => (
+                        <button
+                          key={w}
+                          type="button"
+                          className="flex-1 px-1 py-1 rounded text-[10px] border"
+                          style={
+                            line.weight === w
+                              ? { background: "#edf7ee", borderColor: GREEN, color: GREEN, fontWeight: w }
+                              : { borderColor: "#e4e4e8", color: "#666", fontWeight: w }
+                          }
+                          onClick={() => updateBoxLine(line.id, { weight: w })}
+                        >
+                          {w === 400 ? "Regular" : w === 600 ? "Semi" : "Bold"}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="flex gap-1">
+                      {(["left", "center", "right"] as TextAlign[]).map((align) => (
+                        <button
+                          key={align}
+                          type="button"
+                          className="flex-1 px-1 py-1 rounded text-[10px] border"
+                          style={
+                            line.align === align
+                              ? { background: "#edf7ee", borderColor: GREEN, color: GREEN }
+                              : { borderColor: "#e4e4e8", color: "#666" }
+                          }
+                          onClick={() => updateBoxLine(line.id, { align })}
+                        >
+                          {align === "left" ? "Sx" : align === "center" ? "Centro" : "Dx"}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <label className="flex flex-col gap-0.5">
+                        <span style={{ fontSize: 10, color: "#aaa" }}>Colore</span>
+                        <input
+                          type="color"
+                          value={/^#[0-9a-fA-F]{6}$/.test(line.color) ? line.color : GREEN}
+                          className="w-full h-7 border rounded cursor-pointer"
+                          style={{ borderColor: "#e4e4e8", padding: 2 }}
+                          onChange={(e) => updateBoxLine(line.id, { color: e.target.value })}
+                        />
+                      </label>
+                      <label className="flex flex-col gap-0.5">
+                        <span style={{ fontSize: 10, color: "#aaa" }}>Tracking</span>
+                        <input
+                          type="number"
+                          className="w-full px-2 py-1 text-xs border rounded font-mono outline-none"
+                          style={{ borderColor: "#e4e4e8" }}
+                          value={line.letterSpacing}
+                          onChange={(e) => updateBoxLine(line.id, { letterSpacing: Number(e.target.value) })}
+                        />
+                      </label>
+                    </div>
+                    <label className="flex flex-col gap-0.5">
+                      <div className="flex justify-between">
+                        <span style={{ fontSize: 10, color: "#888" }}>Offset Y</span>
+                        <span className="font-mono" style={{ fontSize: 10, color: "#666" }}>{line.offsetY}px</span>
+                      </div>
+                      <input
+                        type="range" min={-40} max={40} step={1}
+                        value={line.offsetY} className="w-full" style={{ accentColor: GREEN }}
+                        onChange={(e) => updateBoxLine(line.id, { offsetY: Number(e.target.value) })}
+                      />
+                    </label>
+                  </div>
+                );
+              })}
+              <button
+                type="button"
+                className="flex items-center justify-center gap-1 px-2 py-1.5 rounded border text-xs"
+                style={{ borderColor: "#e2e2e6", color: "#555" }}
+                onClick={addBoxLine}
+              >
+                <Plus size={11} /> Aggiungi riga
+              </button>
+            </div>
+          )}
         </Section>
 
         <Section label="Dati slide">
