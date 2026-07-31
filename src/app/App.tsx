@@ -573,7 +573,7 @@ function drawLayoutText(
   ctx.textBaseline = "alphabetic";
 }
 
-async function exportSlide(slide: Slide, H: number, fontFam: string, cardShadow: CardShadow = defaultCardShadow()) {
+async function renderSlideBlob(slide: Slide, H: number, fontFam: string, cardShadow: CardShadow = defaultCardShadow()): Promise<Blob> {
   await document.fonts.ready;
 
   const W = CARD_W;
@@ -728,15 +728,58 @@ async function exportSlide(slide: Slide, H: number, fontFam: string, cardShadow:
 
   ctx.restore(); // end card translate
 
-  canvas.toBlob((blob) => {
-    if (!blob) return;
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${slide.descrizione || "slide"}.jpg`;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 2000);
-  }, "image/jpeg", 0.95);
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (!blob) reject(new Error("Export fallito"));
+      else resolve(blob);
+    }, "image/jpeg", 0.95);
+  });
+}
+
+function safeExportName(name: string, fallback = "slide"): string {
+  const s = String(name ?? "")
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 80);
+  return s || fallback;
+}
+
+function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+async function exportSlide(slide: Slide, H: number, fontFam: string, cardShadow: CardShadow = defaultCardShadow()) {
+  const blob = await renderSlideBlob(slide, H, fontFam, cardShadow);
+  downloadBlob(blob, `${safeExportName(slide.descrizione)}.jpg`);
+}
+
+async function exportAllSlidesZip(
+  slides: Slide[],
+  H: number,
+  fontFam: string,
+  cardShadow: CardShadow = defaultCardShadow(),
+) {
+  const { default: JSZip } = await import("jszip");
+  const zip = new JSZip();
+  const used = new Map<string, number>();
+
+  for (let i = 0; i < slides.length; i++) {
+    const s = slides[i];
+    const blob = await renderSlideBlob(s, H, fontFam, cardShadow);
+    const base = safeExportName(s.descrizione, `slide-${i + 1}`);
+    const n = (used.get(base) ?? 0) + 1;
+    used.set(base, n);
+    zip.file(n === 1 ? `${base}.jpg` : `${base}-${n}.jpg`, blob);
+  }
+
+  const zipBlob = await zip.generateAsync({ type: "blob" });
+  downloadBlob(zipBlob, "slide.zip");
 }
 
 // ─── DraggableImage ──────────────────────────────────────────────────────────
@@ -1899,11 +1942,12 @@ export default function App() {
   const handleExportAll = async () => {
     setExporting(true);
     try {
-      for (const s of slides) {
-        await exportSlide(s, slideH, fontFam, cardShadow);
-        await new Promise((r) => setTimeout(r, 400));
-      }
-    } finally { setExporting(false); }
+      await exportAllSlidesZip(slides, slideH, fontFam, cardShadow);
+    } catch {
+      alert("Errore durante l'export ZIP.");
+    } finally {
+      setExporting(false);
+    }
   };
 
   const selectedText = isTextKey(activeEdit) ? activeEdit : null;
@@ -2660,7 +2704,7 @@ export default function App() {
             disabled={exporting}
             onClick={handleExportAll}
           >
-            <Download size={12} /> Esporta tutte ({slides.length})
+            <Download size={12} /> Esporta tutte (ZIP)
           </button>
         </div>
       </div>
