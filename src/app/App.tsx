@@ -709,20 +709,12 @@ async function renderSlideBlob(slide: Slide, H: number, fontFam: string, cardSha
     ctx.restore();
   }
 
-  // 13. Logo image (inside logo box area)
+  // 13. Logo image (inside logo box area) — same math as preview (contain + center scale)
   if (slide.logo) {
     ctx.save();
     rrect(ctx, LOGO_X, LOGO_Y, LOGO_W, LOGO_H, LOGO_RADIUS); ctx.clip();
     const li = await loadImg(slide.logo.src);
-    const ia = li.naturalWidth / li.naturalHeight;
-    const ba = LOGO_W / LOGO_H;
-    let dw: number, dh: number;
-    const logoPad = vis.logoBoxBg ? 20 : 8;
-    if (ia > ba) { dw = LOGO_W - logoPad * 2; dh = dw / ia; }
-    else          { dh = LOGO_H - logoPad * 2; dw = dh * ia; }
-    const logoX2 = LOGO_X + (LOGO_W - dw) / 2 + slide.logo.x;
-    const logoY2 = LOGO_Y + (LOGO_H - dh) / 2 + slide.logo.y;
-    ctx.drawImage(li, logoX2, logoY2, dw * slide.logo.scale, dh * slide.logo.scale);
+    drawContain(ctx, li, LOGO_X, LOGO_Y, LOGO_W, LOGO_H, slide.logo.x, slide.logo.y, slide.logo.scale);
     ctx.restore();
   }
 
