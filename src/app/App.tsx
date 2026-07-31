@@ -344,6 +344,31 @@ const GREEN   = "#4f8d53";
 const BR      = 36;          // card border-radius
 const DEFAULT_H = 685;
 
+/** Soft drop shadow of the green card on the white page (preview + export). */
+interface CardShadow {
+  blur: number;
+  opacity: number;
+  offsetY: number;
+}
+
+function defaultCardShadow(): CardShadow {
+  return { blur: 7, opacity: 0.31, offsetY: 7 };
+}
+
+function cardShadowCss(s: CardShadow): string {
+  return `0 ${s.offsetY}px ${s.blur}px rgba(0,0,0,${s.opacity})`;
+}
+
+/** Side/top inset from blur only — offset Y must not shrink the card. */
+function cardShadowPad(s: CardShadow): number {
+  return Math.max(8, Math.ceil(s.blur + 2));
+}
+
+/** Extra canvas height so a positive offset Y is not clipped. */
+function cardShadowExtraHeight(s: CardShadow): number {
+  return Math.max(0, Math.ceil(s.offsetY));
+}
+
 // Photo
 const PHOTO_L     = 22;   // left/right inset from card edge
 const PHOTO_T     = 41;   // top inset (crown zone height)
@@ -599,12 +624,20 @@ function drawLayoutText(
   ctx.textBaseline = "alphabetic";
 }
 
-async function exportSlide(slide: Slide, H: number, fontFam: string) {
+async function exportSlide(slide: Slide, H: number, fontFam: string, cardShadow: CardShadow = defaultCardShadow()) {
   await document.fonts.ready;
 
   const W = CARD_W;
+  const pad = cardShadowPad(cardShadow);
+  const extraH = cardShadowExtraHeight(cardShadow);
+  const contentScale = (W - pad * 2) / W;
+  const scaledH = H * contentScale;
+  const vPad = (H - scaledH) / 2;
+
+  // Final image: width always 800; height grows only if offset Y needs room below
   const canvas = document.createElement("canvas");
-  canvas.width = W; canvas.height = H;
+  canvas.width = W;
+  canvas.height = H + extraH;
   const ctx = canvas.getContext("2d")!;
   const ph = photoRect(H);
   const { textLayout, logoBox, listinoBox, visibility: vis } = slide;
@@ -613,13 +646,25 @@ async function exportSlide(slide: Slide, H: number, fontFam: string) {
     : slide.tesseratiBox;
   const { x: LOGO_X, y: LOGO_Y, w: LOGO_W, h: LOGO_H } = logoBox;
 
-  // 1. White canvas background (shows through card corners)
+  // 1. White page (margin visible around the card)
   ctx.fillStyle = "white";
-  ctx.fillRect(0, 0, W, H);
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  // 2. Green card (full canvas, rounded)
+  // 2. Green card inset by blur-only pad; offset Y may spill into extraH
+  ctx.save();
+  ctx.shadowColor = `rgba(0,0,0,${cardShadow.opacity})`;
+  ctx.shadowBlur = cardShadow.blur;
+  ctx.shadowOffsetX = 0;
+  ctx.shadowOffsetY = cardShadow.offsetY;
   ctx.fillStyle = GREEN;
-  rrect(ctx, 0, 0, W, H, BR); ctx.fill();
+  rrect(ctx, pad, vPad, W - pad * 2, scaledH, BR * contentScale);
+  ctx.fill();
+  ctx.restore();
+
+  // Content scaled into the inset card
+  ctx.save();
+  ctx.translate(pad, vPad);
+  ctx.scale(contentScale, contentScale);
 
   // 3. Photo (clipped)
   ctx.save();
@@ -665,7 +710,6 @@ async function exportSlide(slide: Slide, H: number, fontFam: string) {
       ctx.textAlign = line.align;
       ctx.textBaseline = "top";
       if (line.letterSpacing) {
-        // Canvas letterSpacing is supported in modern browsers
         (ctx as any).letterSpacing = `${line.letterSpacing}px`;
       }
       ctx.fillText(line.text, pos.x, pos.y);
@@ -701,7 +745,7 @@ async function exportSlide(slide: Slide, H: number, fontFam: string) {
     });
   }
 
-  // 11. Crown (white PNG drawn directly; transparent bg = green card shows through)
+  // 11. Crown
   try {
     const crownImg = await loadImg(simboloPSC);
     ctx.drawImage(crownImg, CARD_W / 2 - CROWN_W / 2, CROWN_Y, CROWN_W, CROWN_H);
@@ -721,18 +765,19 @@ async function exportSlide(slide: Slide, H: number, fontFam: string) {
     ctx.save();
     rrect(ctx, LOGO_X, LOGO_Y, LOGO_W, LOGO_H, LOGO_RADIUS); ctx.clip();
     const li = await loadImg(slide.logo.src);
-    // use contain (not cover) for logo
     const ia = li.naturalWidth / li.naturalHeight;
     const ba = LOGO_W / LOGO_H;
     let dw: number, dh: number;
-    const pad = vis.logoBoxBg ? 20 : 8;
-    if (ia > ba) { dw = LOGO_W - pad * 2; dh = dw / ia; }
-    else          { dh = LOGO_H - pad * 2; dw = dh * ia; }
+    const logoPad = vis.logoBoxBg ? 20 : 8;
+    if (ia > ba) { dw = LOGO_W - logoPad * 2; dh = dw / ia; }
+    else          { dh = LOGO_H - logoPad * 2; dw = dh * ia; }
     const logoX2 = LOGO_X + (LOGO_W - dw) / 2 + slide.logo.x;
     const logoY2 = LOGO_Y + (LOGO_H - dh) / 2 + slide.logo.y;
     ctx.drawImage(li, logoX2, logoY2, dw * slide.logo.scale, dh * slide.logo.scale);
     ctx.restore();
   }
+
+  ctx.restore(); // end card translate
 
   canvas.toBlob((blob) => {
     if (!blob) return;
@@ -1610,6 +1655,7 @@ export default function App() {
   const [slides, setSlides]         = useState<Slide[]>([mkSlide()]);
   const [current, setCurrent]       = useState(0);
   const [slideH, setSlideH]         = useState(DEFAULT_H);
+  const [cardShadow, setCardShadow] = useState<CardShadow>(() => defaultCardShadow());
   const [activeEdit, setActiveEdit] = useState<ActiveEdit>(null);
   const fontFam = "Sansumi";
   const [pasteText, setPasteText]   = useState("");
@@ -1880,7 +1926,7 @@ export default function App() {
   };
 
   const saveProject = () => {
-    const project = { version: 2, slideHeight: slideH, fontFamily: fontFam, slides };
+    const project = { version: 2, slideHeight: slideH, fontFamily: fontFam, cardShadow, slides };
     const blob = new Blob([JSON.stringify(project)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a"); a.href = url; a.download = "progetto-slide.json"; a.click();
@@ -1900,20 +1946,21 @@ export default function App() {
       };
       setSlides(project.slides.map((raw: any) => normalizeSlide(raw, fallback)));
       if (project.slideHeight) setSlideH(project.slideHeight);
+      if (project.cardShadow) setCardShadow({ ...defaultCardShadow(), ...project.cardShadow });
       setCurrent(0); setActiveEdit(null);
     } catch { alert("Errore nel caricamento del progetto."); }
   };
 
   const handleExport = async () => {
     setExporting(true);
-    try { await exportSlide(slide, slideH, fontFam); } finally { setExporting(false); }
+    try { await exportSlide(slide, slideH, fontFam, cardShadow); } finally { setExporting(false); }
   };
 
   const handleExportAll = async () => {
     setExporting(true);
     try {
       for (const s of slides) {
-        await exportSlide(s, slideH, fontFam);
+        await exportSlide(s, slideH, fontFam, cardShadow);
         await new Promise((r) => setTimeout(r, 400));
       }
     } finally { setExporting(false); }
@@ -1991,34 +2038,55 @@ export default function App() {
           backgroundImage: "radial-gradient(circle, rgba(0,0,0,0.07) 1px, transparent 0)",
           backgroundSize: "22px 22px",
         }} />
-        <div style={{
-          position: "relative",
-          width: CARD_W * previewScale, height: slideH * previewScale,
-          borderRadius: BR * previewScale,
-          overflow: photoMode ? "visible" : "hidden",
-          flexShrink: 0,
-          boxShadow: "0 24px 72px rgba(0,0,0,0.28), 0 2px 8px rgba(0,0,0,0.1)",
-        }}>
-          <SlideCard
-            slide={slide} slideH={slideH} fontFam={fontFam}
-            activeEdit={activeEdit} onSetEdit={setActiveEdit}
-            selectedBoxLineId={selectedBoxLineId}
-            onSelectBoxLine={setSelectedBoxLineId}
-            onUpdateSlide={updateSlide}
-            onUpdateBg={(t) => updateSlide({ bg: t })}
-            onUpdateLogo={(t) => updateSlide({ logo: t })}
-            onUpdateText={updateText}
-            onUpdateLogoBox={updateLogoBox}
-            onUpdateTesseratiBox={updateTesseratiBox}
-            onUpdateListinoBox={updateListinoBox}
-            onUpdateBoxLine={updateBoxLine}
-            onUploadBg={(f) => uploadImage(f, "bg")}
-            onUploadLogo={(f) => uploadImage(f, "logo")}
-            onBgGestureStart={pushBgUndo}
-            onLogoGestureStart={pushLogoUndo}
-            scale={previewScale}
-          />
-        </div>
+        {(() => {
+          const pad = cardShadowPad(cardShadow);
+          const extraH = cardShadowExtraHeight(cardShadow);
+          const contentScale = (CARD_W - pad * 2) / CARD_W;
+          const scaledH = slideH * contentScale;
+          const vPad = (slideH - scaledH) / 2;
+          const ps = previewScale;
+          return (
+            <div style={{
+              position: "relative",
+              width: CARD_W * ps,
+              height: (slideH + extraH) * ps,
+              background: "white",
+              flexShrink: 0,
+            }}>
+              <div style={{
+                position: "absolute",
+                left: pad * ps,
+                top: vPad * ps,
+                width: (CARD_W - pad * 2) * ps,
+                height: scaledH * ps,
+                borderRadius: BR * contentScale * ps,
+                overflow: photoMode ? "visible" : "hidden",
+                boxShadow: cardShadowCss(cardShadow),
+                background: GREEN,
+              }}>
+                <SlideCard
+                  slide={slide} slideH={slideH} fontFam={fontFam}
+                  activeEdit={activeEdit} onSetEdit={setActiveEdit}
+                  selectedBoxLineId={selectedBoxLineId}
+                  onSelectBoxLine={setSelectedBoxLineId}
+                  onUpdateSlide={updateSlide}
+                  onUpdateBg={(t) => updateSlide({ bg: t })}
+                  onUpdateLogo={(t) => updateSlide({ logo: t })}
+                  onUpdateText={updateText}
+                  onUpdateLogoBox={updateLogoBox}
+                  onUpdateTesseratiBox={updateTesseratiBox}
+                  onUpdateListinoBox={updateListinoBox}
+                  onUpdateBoxLine={updateBoxLine}
+                  onUploadBg={(f) => uploadImage(f, "bg")}
+                  onUploadLogo={(f) => uploadImage(f, "logo")}
+                  onBgGestureStart={pushBgUndo}
+                  onLogoGestureStart={pushLogoUndo}
+                  scale={ps * contentScale}
+                />
+              </div>
+            </div>
+          );
+        })()}
         {(photoMode || activeEdit || selectedBoxLineId) && (
           <div
             className="absolute bottom-5 left-1/2 -translate-x-1/2 flex items-center gap-2 px-4 py-2 rounded-full text-xs text-white"
@@ -2098,6 +2166,45 @@ export default function App() {
             <span className="text-sm font-mono w-16 text-right" style={{ color: "#333" }}>{slideH}px</span>
           </div>
           <p style={{ fontSize: 10, color: "#ccc", margin: 0 }}>Larghezza fissa: 800px</p>
+        </Section>
+
+        <Section label="Ombra card verde">
+          <label className="flex flex-col gap-0.5">
+            <div className="flex justify-between">
+              <span style={{ fontSize: 10, color: "#888" }}>Blur</span>
+              <span className="font-mono" style={{ fontSize: 10, color: "#666" }}>{cardShadow.blur}px</span>
+            </div>
+            <input
+              type="range" min={0} max={80} step={1}
+              value={cardShadow.blur} className="w-full" style={{ accentColor: GREEN }}
+              onChange={(e) => setCardShadow((s) => ({ ...s, blur: Number(e.target.value) }))}
+            />
+          </label>
+          <label className="flex flex-col gap-0.5">
+            <div className="flex justify-between">
+              <span style={{ fontSize: 10, color: "#888" }}>Opacità</span>
+              <span className="font-mono" style={{ fontSize: 10, color: "#666" }}>{Math.round(cardShadow.opacity * 100)}%</span>
+            </div>
+            <input
+              type="range" min={0} max={60} step={1}
+              value={Math.round(cardShadow.opacity * 100)} className="w-full" style={{ accentColor: GREEN }}
+              onChange={(e) => setCardShadow((s) => ({ ...s, opacity: Number(e.target.value) / 100 }))}
+            />
+          </label>
+          <label className="flex flex-col gap-0.5">
+            <div className="flex justify-between">
+              <span style={{ fontSize: 10, color: "#888" }}>Offset Y</span>
+              <span className="font-mono" style={{ fontSize: 10, color: "#666" }}>{cardShadow.offsetY}px</span>
+            </div>
+            <input
+              type="range" min={-20} max={40} step={1}
+              value={cardShadow.offsetY} className="w-full" style={{ accentColor: GREEN }}
+              onChange={(e) => setCardShadow((s) => ({ ...s, offsetY: Number(e.target.value) }))}
+            />
+          </label>
+          <p style={{ fontSize: 10, color: "#ccc", lineHeight: 1.4, margin: 0 }}>
+            Larghezza JPEG 800px. Il blur riduce un po’ la card; l’offset Y allunga solo l’altezza.
+          </p>
         </Section>
 
         <Section label="Layout slide">
