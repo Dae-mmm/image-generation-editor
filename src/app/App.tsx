@@ -1,9 +1,8 @@
 import { useState, useRef, useCallback, useEffect, type ReactNode } from "react";
 import {
-  Upload, Download, Plus, Trash2, FileSpreadsheet,
+  Upload, Download, Plus, Trash2,
   RefreshCcw, Move, ZoomIn, Save, FolderOpen, ChevronDown,
 } from "lucide-react";
-import * as XLSX from "xlsx";
 import simboloPSC from "../imports/SimboloPSC.png";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -500,56 +499,6 @@ function parseProductText(text: string): Slide[] {
     if (slide) slides.push(slide);
   }
   return slides;
-}
-
-function parseXlsx(file: File): Promise<Slide[]> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        const wb = XLSX.read(e.target!.result, { type: "binary" });
-        const ws = wb.Sheets[wb.SheetNames[0]];
-        const rows = XLSX.utils.sheet_to_json<any[]>(ws, { header: 1 });
-        if (!rows.length) return resolve([]);
-
-        const first = (rows[0] as any[]).map((h) => String(h ?? "").toLowerCase());
-        const col = (...kws: string[]) => {
-          for (const kw of kws) { const i = first.findIndex((h) => h.includes(kw)); if (i >= 0) return i; }
-          return -1;
-        };
-        const dc = col("descriz", "nome", "prodotto", "name");
-        const tc = col("tesserat", "soci", "member");
-        const lc = col("listino", "cartellino", "originale", "list");
-        const sc = col("sconto", "discount");
-        const hasHeaders = dc >= 0 || tc >= 0 || lc >= 0 || sc >= 0;
-
-        const slides: Slide[] = [];
-        if (hasHeaders) {
-          for (let i = 1; i < rows.length; i++) {
-            const r = rows[i] as any[];
-            if (!r?.length) continue;
-            const v = (ci: number) => ci >= 0 ? String(r[ci] ?? "").replace(/[€$%]/g, "").trim() : "";
-            const scontoRaw = sc >= 0 ? String(r[sc] ?? "") : "";
-            slides.push(mkSlide({
-              descrizione: v(dc),
-              prezzoTesserati: v(tc),
-              prezzoListino: v(lc),
-              sconto: sc >= 0 ? formatSconto(scontoRaw) : "",
-            }));
-          }
-        } else {
-          for (const row of rows) {
-            const cols = (row as any[]).map((c) => String(c ?? "").trim());
-            const slide = slideFromPositionalCols(cols);
-            if (slide) slides.push(slide);
-          }
-        }
-        resolve(slides);
-      } catch (err) { reject(err); }
-    };
-    reader.onerror = reject;
-    reader.readAsBinaryString(file);
-  });
 }
 
 // ─── Canvas helpers ───────────────────────────────────────────────────────────
@@ -1903,15 +1852,6 @@ export default function App() {
     setImportMsg(`${imported.length} slide create`);
   };
 
-  const handleExcelImport = async (file: File) => {
-    try {
-      const imported = await parseXlsx(file);
-      if (!imported.length) { alert("Nessun dato trovato."); return; }
-      appendSlides(imported);
-      setImportMsg(`${imported.length} slide create`);
-    } catch { alert("Errore nella lettura del file Excel."); }
-  };
-
   const addSlide = () => setSlides((prev) => { setCurrent(prev.length); return [...prev, mkSlide()]; });
 
   const deleteSlide = (idx: number) => {
@@ -2114,7 +2054,7 @@ export default function App() {
         </div>
 
         <div className="flex-1 overflow-y-auto min-h-0">
-        <Section label="Progetto" defaultOpen>
+        <Section label="Progetto" accent="#d8efe0" accentText="#4a8f62" defaultOpen>
           <div className="flex gap-2">
             <button className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded border text-xs font-medium hover:bg-gray-50 transition-colors" style={{ borderColor: "#e2e2e6", color: "#555" }} onClick={saveProject}>
               <Save size={13} /> Salva JSON
@@ -2126,7 +2066,7 @@ export default function App() {
           </div>
         </Section>
 
-        <Section label="Incolla prodotti" defaultOpen>
+        <Section label="Incolla prodotti" accent="#ffe8d4" accentText="#b07a45" defaultOpen>
           <textarea
             className="w-full px-2.5 py-2 text-xs border rounded outline-none font-mono resize-y"
             style={{ borderColor: "#e4e4e8", minHeight: 96 }}
@@ -2150,18 +2090,31 @@ export default function App() {
           </p>
         </Section>
 
-        <Section label="Importa Excel">
-          <label className="flex items-center gap-2 px-3 py-2 rounded border border-dashed border-gray-300 hover:border-gray-400 cursor-pointer text-sm text-gray-500">
-            <FileSpreadsheet size={14} />
-            Carica .xlsx / .xls / .csv
-            <input type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleExcelImport(f); e.target.value = ""; }} />
-          </label>
-          <p style={{ fontSize: 10, color: "#ccc", lineHeight: 1.5, margin: 0 }}>
-            Header oppure 8 colonne posizionali come sopra
-          </p>
+        <Section label="Dati slide" accent="#e8e0f5" accentText="#6f5f9a" defaultOpen>
+          <Field label="Descrizione prodotto">
+            <textarea
+              className="w-full px-2.5 py-1.5 text-sm border rounded outline-none resize-y"
+              style={{ borderColor: "#e4e4e8", minHeight: 64, lineHeight: 1.35 }}
+              rows={3}
+              value={slide.descrizione}
+              onChange={(e) => updateSlide({ descrizione: e.target.value })}
+              onFocus={(e) => (e.target.style.borderColor = GREEN)}
+              onBlur={(e) => (e.target.style.borderColor = "#e4e4e8")}
+              placeholder={"Es: Lindt Zero%\n75g"}
+            />
+          </Field>
+          <Field label="Prezzo Tesserati (€)">
+            <input className="w-full px-2.5 py-1.5 text-sm border rounded outline-none font-mono" style={{ borderColor: "#e4e4e8" }} value={slide.prezzoTesserati} onChange={(e) => updateSlide({ prezzoTesserati: e.target.value })} onFocus={(e) => (e.target.style.borderColor = GREEN)} onBlur={(e) => (e.target.style.borderColor = "#e4e4e8")} placeholder="5,99" />
+          </Field>
+          <Field label="Prezzo di Listino (€)">
+            <input className="w-full px-2.5 py-1.5 text-sm border rounded outline-none font-mono" style={{ borderColor: "#e4e4e8" }} value={slide.prezzoListino} onChange={(e) => updateSlide({ prezzoListino: e.target.value })} onFocus={(e) => (e.target.style.borderColor = GREEN)} onBlur={(e) => (e.target.style.borderColor = "#e4e4e8")} placeholder="14,90" />
+          </Field>
+          <Field label="Testo sconto (es. «-50%» oppure «-50»)">
+            <input className="w-full px-2.5 py-1.5 text-sm border rounded outline-none font-mono" style={{ borderColor: "#e4e4e8" }} value={slide.sconto} onChange={(e) => updateSlide({ sconto: e.target.value })} onFocus={(e) => (e.target.style.borderColor = GREEN)} onBlur={(e) => (e.target.style.borderColor = "#e4e4e8")} placeholder="-50%" />
+          </Field>
         </Section>
 
-        <Section label="Altezza slide">
+        <Section label="Altezza slide" accent="#fff1c9" accentText="#9a7f35">
           <div className="flex items-center gap-3">
             <input type="range" min={500} max={1400} step={5} value={slideH} className="flex-1" style={{ accentColor: GREEN }} onChange={(e) => setSlideH(Number(e.target.value))} />
             <span className="text-sm font-mono w-16 text-right" style={{ color: "#333" }}>{slideH}px</span>
@@ -2169,7 +2122,7 @@ export default function App() {
           <p style={{ fontSize: 10, color: "#ccc", margin: 0 }}>Larghezza fissa: 800px</p>
         </Section>
 
-        <Section label="Ombra card verde">
+        <Section label="Ombra card verde" accent="#e2f4e6" accentText="#3f8f55">
           <label className="flex flex-col gap-0.5">
             <div className="flex justify-between">
               <span style={{ fontSize: 10, color: "#888" }}>Blur</span>
@@ -2208,7 +2161,7 @@ export default function App() {
           </p>
         </Section>
 
-        <Section label="Layout slide">
+        <Section label="Layout slide" accent="#fde2e4" accentText="#a85f6a">
           <div className="flex gap-1">
             {(["standard", "singleCenter"] as LayoutPreset[]).map((preset) => (
               <button
@@ -2451,7 +2404,7 @@ export default function App() {
           </p>
         </Section>
 
-        <Section label="Testi nel box">
+        <Section label="Testi nel box" accent="#d5f0ee" accentText="#3f857e">
           <label className="flex items-center justify-between gap-2 text-xs" style={{ color: "#555" }}>
             <span>Editor righe libere</span>
             <input
@@ -2603,31 +2556,7 @@ export default function App() {
           )}
         </Section>
 
-        <Section label="Dati slide" defaultOpen>
-          <Field label="Descrizione prodotto">
-            <textarea
-              className="w-full px-2.5 py-1.5 text-sm border rounded outline-none resize-y"
-              style={{ borderColor: "#e4e4e8", minHeight: 64, lineHeight: 1.35 }}
-              rows={3}
-              value={slide.descrizione}
-              onChange={(e) => updateSlide({ descrizione: e.target.value })}
-              onFocus={(e) => (e.target.style.borderColor = GREEN)}
-              onBlur={(e) => (e.target.style.borderColor = "#e4e4e8")}
-              placeholder={"Es: Lindt Zero%\n75g"}
-            />
-          </Field>
-          <Field label="Prezzo Tesserati (€)">
-            <input className="w-full px-2.5 py-1.5 text-sm border rounded outline-none font-mono" style={{ borderColor: "#e4e4e8" }} value={slide.prezzoTesserati} onChange={(e) => updateSlide({ prezzoTesserati: e.target.value })} onFocus={(e) => (e.target.style.borderColor = GREEN)} onBlur={(e) => (e.target.style.borderColor = "#e4e4e8")} placeholder="5,99" />
-          </Field>
-          <Field label="Prezzo di Listino (€)">
-            <input className="w-full px-2.5 py-1.5 text-sm border rounded outline-none font-mono" style={{ borderColor: "#e4e4e8" }} value={slide.prezzoListino} onChange={(e) => updateSlide({ prezzoListino: e.target.value })} onFocus={(e) => (e.target.style.borderColor = GREEN)} onBlur={(e) => (e.target.style.borderColor = "#e4e4e8")} placeholder="14,90" />
-          </Field>
-          <Field label="Testo sconto (es. «-50%» oppure «-50»)">
-            <input className="w-full px-2.5 py-1.5 text-sm border rounded outline-none font-mono" style={{ borderColor: "#e4e4e8" }} value={slide.sconto} onChange={(e) => updateSlide({ sconto: e.target.value })} onFocus={(e) => (e.target.style.borderColor = GREEN)} onBlur={(e) => (e.target.style.borderColor = "#e4e4e8")} placeholder="-50%" />
-          </Field>
-        </Section>
-
-        <Section label="Immagini">
+        <Section label="Immagini" accent="#e0e4f8" accentText="#5f6598">
           <Field label="Foto sfondo">
             <div className="flex gap-2">
               <label className="flex-1 flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded border border-dashed border-gray-300 hover:border-gray-400 cursor-pointer text-gray-500">
@@ -2741,22 +2670,50 @@ export default function App() {
 
 // ─── Sidebar helpers ──────────────────────────────────────────────────────────
 
-function Section({ label, children, defaultOpen = false }: { label: string; children: ReactNode; defaultOpen?: boolean }) {
+function Section({
+  label,
+  children,
+  defaultOpen = false,
+  accent = "#f0f0f2",
+  accentText = "#888890",
+}: {
+  label: string;
+  children: ReactNode;
+  defaultOpen?: boolean;
+  accent?: string;
+  accentText?: string;
+}) {
   const [open, setOpen] = useState(defaultOpen);
   return (
     <div style={{ borderBottom: "1px solid #f2f2f4" }}>
       <button
         type="button"
-        className="w-full flex items-center justify-between gap-2 px-4 py-3 text-left"
+        className="w-full flex items-center justify-between gap-2 px-4 py-2.5 text-left"
+        style={{ background: accent }}
         onClick={() => setOpen((v) => !v)}
       >
-        <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.11em", color: "#c0c0c4", textTransform: "uppercase" }}>
+        <span
+          className="inline-flex items-center gap-2"
+          style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.11em", color: accentText, textTransform: "uppercase" }}
+        >
+          <span
+            aria-hidden
+            style={{
+              width: 8,
+              height: 8,
+              borderRadius: 999,
+              background: accentText,
+              opacity: 0.55,
+              flexShrink: 0,
+            }}
+          />
           {label}
         </span>
         <ChevronDown
           size={14}
           style={{
-            color: "#c0c0c4",
+            color: accentText,
+            opacity: 0.7,
             flexShrink: 0,
             transform: open ? "rotate(0deg)" : "rotate(-90deg)",
             transition: "transform 0.15s ease",
@@ -2764,7 +2721,7 @@ function Section({ label, children, defaultOpen = false }: { label: string; chil
         />
       </button>
       {open && (
-        <div className="px-4 pb-4 flex flex-col gap-3">
+        <div className="px-4 pb-4 pt-3 flex flex-col gap-3">
           {children}
         </div>
       )}
