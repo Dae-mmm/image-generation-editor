@@ -1,8 +1,8 @@
 /**
- * Single Fal generation endpoint — CommonJS for reliable Vite+Vercel serverless.
+ * Single Fal generation endpoint.
  * One browser call → server talks to Fal (upload + queue) with FAL_KEY.
+ * ESM because package.json has "type": "module".
  */
-const { fal } = require("@fal-ai/client");
 
 const FAL_WORKFLOW = "workflows/dmammolidesign/imagemakerpsc";
 
@@ -70,7 +70,7 @@ function dataUrlToBlob(dataUrl) {
   return new Blob([Uint8Array.from(buf)], { type: contentType });
 }
 
-module.exports = async function handler(req, res) {
+export default async function handler(req, res) {
   if (req.method === "OPTIONS") {
     res.status(204).end();
     return;
@@ -89,6 +89,7 @@ module.exports = async function handler(req, res) {
       return;
     }
 
+    const { fal } = await import("@fal-ai/client");
     fal.config({ credentials: process.env.FAL_KEY });
 
     const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
@@ -134,9 +135,9 @@ module.exports = async function handler(req, res) {
       body: err && err.body,
     });
   }
-};
+}
 
-module.exports.config = {
+export const config = {
   api: {
     bodyParser: {
       sizeLimit: "4.5mb",

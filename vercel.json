@@ -1,6 +1,6 @@
 {
   "functions": {
-    "api/generate.cjs": {
+    "api/generate.js": {
       "maxDuration": 60,
       "memory": 1024
     }
