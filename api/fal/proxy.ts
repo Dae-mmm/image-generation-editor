@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { proxyFalRequest } from "./_proxyCore";
+import { proxyFalRequest } from "../../lib/fal-proxy";
 
 export const config = {
   api: {
@@ -7,6 +7,7 @@ export const config = {
       sizeLimit: "10mb",
     },
   },
+  maxDuration: 60,
 };
 
 function readBody(req: VercelRequest): Promise<string | undefined> {
@@ -17,10 +18,20 @@ function readBody(req: VercelRequest): Promise<string | undefined> {
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  await proxyFalRequest({
-    method: req.method,
-    headers: req.headers,
-    body: await readBody(req),
-    res,
-  });
+  try {
+    await proxyFalRequest({
+      method: req.method,
+      headers: req.headers,
+      body: await readBody(req),
+      res,
+    });
+  } catch (err: any) {
+    console.error("[fal-proxy] unhandled", err);
+    if (!res.headersSent) {
+      res.status(500).json({
+        message: err?.message || "A server error has occurred",
+        error: err?.message || "A server error has occurred",
+      });
+    }
+  }
 }

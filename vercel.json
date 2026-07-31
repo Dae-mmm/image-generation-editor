@@ -1,0 +1,8 @@
+{
+  "functions": {
+    "api/fal/proxy.ts": {
+      "maxDuration": 60,
+      "memory": 1024
+    }
+  }
+}

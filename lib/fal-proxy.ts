@@ -1,7 +1,6 @@
 import type { IncomingHttpHeaders } from "http";
 import dns from "node:dns";
 
-// Avoid Windows IPv6 "fetch failed" to fal hosts
 try {
   dns.setDefaultResultOrder("ipv4first");
 } catch {
@@ -9,7 +8,6 @@ try {
 }
 
 const TARGET_HEADER = "x-fal-target-url";
-
 const ALLOWED_HOST_SUFFIXES = ["fal.run", "fal.ai", "fal.media"];
 
 function isAllowedTarget(targetUrl: string): boolean {
@@ -32,8 +30,9 @@ function headerValue(
   name: string,
 ): string | undefined {
   const key = name.toLowerCase();
-  const raw = (headers as Record<string, string | string[] | undefined>)[key]
-    ?? (headers as Record<string, string | string[] | undefined>)[name];
+  const raw =
+    (headers as Record<string, string | string[] | undefined>)[key] ??
+    (headers as Record<string, string | string[] | undefined>)[name];
   if (Array.isArray(raw)) return raw[0];
   return raw;
 }
@@ -52,9 +51,7 @@ function jsonError(res: ProxyRes, status: number, message: string, extra?: Recor
   res.end(JSON.stringify({ message, error: message, ...extra }));
 }
 
-/**
- * Minimal fal proxy that preserves Accept and surfaces clear network errors.
- */
+/** Shared Fal proxy used by Vite middleware and Vercel /api/fal/proxy */
 export async function proxyFalRequest(opts: {
   method?: string;
   headers: IncomingHttpHeaders | Record<string, string | string[] | undefined>;
@@ -74,7 +71,7 @@ export async function proxyFalRequest(opts: {
 
   const authorization = falAuthHeader();
   if (!authorization) {
-    jsonError(res, 401, "FAL_KEY missing on server");
+    jsonError(res, 401, "FAL_KEY missing on server — set it in Vercel Environment Variables");
     return;
   }
 
@@ -113,12 +110,7 @@ export async function proxyFalRequest(opts: {
     const cause = err?.cause?.message || err?.cause?.code || err?.code || "";
     const detail = [err?.message, cause].filter(Boolean).join(" — ");
     console.error("[fal-proxy] fetch failed", targetUrl, detail, err);
-    jsonError(
-      res,
-      502,
-      `Proxy non raggiunge Fal (${detail || "fetch failed"}). In locale prova: set NODE_TLS_REJECT_UNAUTHORIZED=0`,
-      { targetUrl },
-    );
+    jsonError(res, 502, `Proxy non raggiunge Fal (${detail || "fetch failed"})`, { targetUrl });
     return;
   }
 

@@ -3,7 +3,7 @@ import path from 'path'
 import dns from 'node:dns'
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
-import { proxyFalRequest } from './api/fal/_proxyCore'
+import { proxyFalRequest } from './lib/fal-proxy'
 
 try {
   dns.setDefaultResultOrder('ipv4first')
@@ -21,8 +21,6 @@ function falDevProxy(): Plugin {
         console.warn('[fal] FAL_KEY mancante: crea .env.local con FAL_KEY=...')
       }
 
-      // On some Windows setups Node fetch→Fal fails TLS verify ("fetch failed").
-      // Opt in via .env.local: FAL_TLS_INSECURE=1  (or NODE_TLS_REJECT_UNAUTHORIZED=0)
       if (env.FAL_TLS_INSECURE === '1' || env.NODE_TLS_REJECT_UNAUTHORIZED === '0') {
         process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
         console.warn('[fal] TLS verify disabilitato (solo locale)')
