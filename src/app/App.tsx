@@ -38,6 +38,12 @@ interface TextStyle {
   x: number; // left (or right edge if align === "right")
   y: number; // top
   align: "left" | "right";
+  /** Drop shadow blur in px; 0 = off */
+  shadowBlur: number;
+  /** Drop shadow opacity 0–1 */
+  shadowOpacity: number;
+  /** Drop shadow Y offset in px */
+  shadowOffsetY: number;
 }
 
 type TextLayout = Record<TextKey, TextStyle>;
@@ -69,16 +75,33 @@ const TEXT_LABELS: Record<TextKey, string> = {
   sconto: "Sconto",
 };
 
+const NO_SHADOW = { shadowBlur: 0, shadowOpacity: 0.65, shadowOffsetY: 0 } as const;
+
 /** Defaults calibrated at DEFAULT_H (685). x = left, or right edge when align=right. */
 function defaultTextLayout(): TextLayout {
   return {
-    descrizione:     { size: 22,  x: 38,  y: 464, align: "left" },
-    labelTesserati:  { size: 25,  x: 32,  y: 532, align: "left" },
-    prezzoTesserati: { size: 61,  x: 299, y: 569, align: "right" },
-    labelListino:    { size: 20,  x: 319, y: 566, align: "left" },
-    prezzoListino:   { size: 30,  x: 447, y: 611, align: "right" },
-    sconto:          { size: 90,  x: 758, y: 532, align: "right" },
+    descrizione:     { size: 22,  x: 38,  y: 464, align: "left",  shadowBlur: 12, shadowOpacity: 0.65, shadowOffsetY: 2 },
+    labelTesserati:  { size: 25,  x: 32,  y: 532, align: "left",  ...NO_SHADOW },
+    prezzoTesserati: { size: 61,  x: 299, y: 569, align: "right", ...NO_SHADOW },
+    labelListino:    { size: 20,  x: 319, y: 566, align: "left",  ...NO_SHADOW },
+    prezzoListino:   { size: 30,  x: 447, y: 611, align: "right", ...NO_SHADOW },
+    sconto:          { size: 90,  x: 758, y: 532, align: "right", shadowBlur: 0, shadowOpacity: 0.65, shadowOffsetY: 2 },
   };
+}
+
+function mergeTextLayout(partial?: Partial<Record<TextKey, Partial<TextStyle>>>): TextLayout {
+  const base = defaultTextLayout();
+  if (!partial) return base;
+  const out = { ...base };
+  for (const key of TEXT_KEYS) {
+    if (partial[key]) out[key] = { ...base[key], ...partial[key] };
+  }
+  return out;
+}
+
+function cssTextShadow(style: TextStyle): string | undefined {
+  if (style.shadowBlur <= 0 || style.shadowOpacity <= 0) return undefined;
+  return `0 ${style.shadowOffsetY}px ${style.shadowBlur}px rgba(0,0,0,${style.shadowOpacity})`;
 }
 
 function defaultLogoBox(): LayoutBox {
@@ -300,7 +323,7 @@ function drawLayoutText(
   ctx: CanvasRenderingContext2D,
   style: TextStyle,
   text: string,
-  opts: { color: string; weight: number; fontFam: string; shadow?: boolean; lineGap?: number },
+  opts: { color: string; weight: number; fontFam: string; lineGap?: number },
 ) {
   if (!text) return;
   const ff = `"${opts.fontFam}", sans-serif`;
@@ -308,9 +331,11 @@ function drawLayoutText(
   ctx.font = `${opts.weight} ${style.size}px ${ff}`;
   ctx.textAlign = style.align;
   ctx.textBaseline = "top";
-  if (opts.shadow) {
-    ctx.shadowColor = "rgba(0,0,0,0.65)";
-    ctx.shadowBlur = 12;
+  if (style.shadowBlur > 0 && style.shadowOpacity > 0) {
+    ctx.shadowColor = `rgba(0,0,0,${style.shadowOpacity})`;
+    ctx.shadowBlur = style.shadowBlur;
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = style.shadowOffsetY;
   }
   const lines = text.split("\n");
   const gap = opts.lineGap ?? style.size * 1.3;
@@ -319,6 +344,8 @@ function drawLayoutText(
   });
   ctx.shadowColor = "transparent";
   ctx.shadowBlur = 0;
+  ctx.shadowOffsetX = 0;
+  ctx.shadowOffsetY = 0;
   ctx.textAlign = "left";
   ctx.textBaseline = "alphabetic";
 }
@@ -374,7 +401,7 @@ async function exportSlide(
   // Texts (layout-driven)
   if (slide.descrizione) {
     drawLayoutText(ctx, textLayout.descrizione, slide.descrizione, {
-      color: "white", weight: 700, fontFam, shadow: true,
+      color: "white", weight: 700, fontFam,
     });
   }
   drawLayoutText(ctx, textLayout.labelTesserati, "Prezzo Tesserati", {
@@ -598,7 +625,6 @@ interface EditableTextProps {
   previewScale: number;
   color: string;
   fontWeight?: number;
-  shadow?: boolean;
   letterSpacing?: string;
   children: ReactNode;
   zIndex?: number;
@@ -606,7 +632,7 @@ interface EditableTextProps {
 
 function EditableText({
   textKey, style, active, onSelect, onChange, previewScale,
-  color, fontWeight = 400, shadow, letterSpacing, children, zIndex = 7,
+  color, fontWeight = 400, letterSpacing, children, zIndex = 7,
   interact = true,
 }: EditableTextProps & { interact?: boolean }) {
   const dragging = useRef(false);
@@ -648,7 +674,7 @@ function EditableText({
         lineHeight: 1.15,
         letterSpacing,
         textAlign: style.align,
-        textShadow: shadow ? "0 2px 12px rgba(0,0,0,0.7)" : undefined,
+        textShadow: cssTextShadow(style),
         whiteSpace: "pre",
         cursor: interact ? (active ? "grab" : "pointer") : "default",
         userSelect: "none",
@@ -917,7 +943,7 @@ function SlideCard({
         active={activeEdit === "descrizione"}
         onSelect={() => onSetEdit("descrizione")}
         onChange={(p) => onUpdateText("descrizione", p)}
-        previewScale={scale} color="white" fontWeight={700} shadow
+        previewScale={scale} color="white" fontWeight={700}
         interact={activeEdit === "descrizione"}
       >
         {slide.descrizione || "Descrizione prodotto"}
@@ -1215,7 +1241,7 @@ export default function App() {
       if (!Array.isArray(project.slides)) throw new Error();
       setSlides(project.slides);
       if (project.slideHeight) setSlideH(project.slideHeight);
-      if (project.textLayout) setTextLayout({ ...defaultTextLayout(), ...project.textLayout });
+      if (project.textLayout) setTextLayout(mergeTextLayout(project.textLayout));
       if (project.logoBox) setLogoBox({ ...defaultLogoBox(), ...project.logoBox });
       if (project.tesseratiBox) setTesseratiBox({ ...defaultTesseratiBox(), ...project.tesseratiBox });
       setCurrent(0); setActiveEdit(null);
@@ -1482,6 +1508,59 @@ export default function App() {
                 style={{ accentColor: GREEN }}
                 onChange={(e) => updateText(selectedText, { size: Number(e.target.value) })}
               />
+              {(selectedText === "descrizione" || selectedText === "sconto") && (
+                <div className="flex flex-col gap-2 pt-1" style={{ borderTop: "1px solid #eee" }}>
+                  <span style={{ fontSize: 10, color: "#aaa", textTransform: "uppercase" }}>Drop shadow</span>
+                  <label className="flex flex-col gap-0.5">
+                    <div className="flex justify-between">
+                      <span style={{ fontSize: 10, color: "#888" }}>Blur</span>
+                      <span className="font-mono" style={{ fontSize: 10, color: "#666" }}>{textLayout[selectedText].shadowBlur}px</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={60}
+                      step={1}
+                      value={textLayout[selectedText].shadowBlur}
+                      className="w-full"
+                      style={{ accentColor: GREEN }}
+                      onChange={(e) => updateText(selectedText, { shadowBlur: Number(e.target.value) })}
+                    />
+                  </label>
+                  <label className="flex flex-col gap-0.5">
+                    <div className="flex justify-between">
+                      <span style={{ fontSize: 10, color: "#888" }}>Opacità</span>
+                      <span className="font-mono" style={{ fontSize: 10, color: "#666" }}>{Math.round(textLayout[selectedText].shadowOpacity * 100)}%</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      step={1}
+                      value={Math.round(textLayout[selectedText].shadowOpacity * 100)}
+                      className="w-full"
+                      style={{ accentColor: GREEN }}
+                      onChange={(e) => updateText(selectedText, { shadowOpacity: Number(e.target.value) / 100 })}
+                    />
+                  </label>
+                  <label className="flex flex-col gap-0.5">
+                    <div className="flex justify-between">
+                      <span style={{ fontSize: 10, color: "#888" }}>Offset Y</span>
+                      <span className="font-mono" style={{ fontSize: 10, color: "#666" }}>{textLayout[selectedText].shadowOffsetY}px</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={-20}
+                      max={40}
+                      step={1}
+                      value={textLayout[selectedText].shadowOffsetY}
+                      className="w-full"
+                      style={{ accentColor: GREEN }}
+                      onChange={(e) => updateText(selectedText, { shadowOffsetY: Number(e.target.value) })}
+                    />
+                  </label>
+                </div>
+              )}
             </div>
           )}
           {(activeEdit === "logoBox" || activeEdit === "tesseratiBox") && (
@@ -1534,7 +1613,16 @@ export default function App() {
 
         <Section label="Dati slide">
           <Field label="Descrizione prodotto">
-            <input className="w-full px-2.5 py-1.5 text-sm border rounded outline-none" style={{ borderColor: "#e4e4e8" }} value={slide.descrizione} onChange={(e) => updateSlide({ descrizione: e.target.value })} onFocus={(e) => (e.target.style.borderColor = GREEN)} onBlur={(e) => (e.target.style.borderColor = "#e4e4e8")} placeholder="Es: Lindt Zero%  75g" />
+            <textarea
+              className="w-full px-2.5 py-1.5 text-sm border rounded outline-none resize-y"
+              style={{ borderColor: "#e4e4e8", minHeight: 64, lineHeight: 1.35 }}
+              rows={3}
+              value={slide.descrizione}
+              onChange={(e) => updateSlide({ descrizione: e.target.value })}
+              onFocus={(e) => (e.target.style.borderColor = GREEN)}
+              onBlur={(e) => (e.target.style.borderColor = "#e4e4e8")}
+              placeholder={"Es: Lindt Zero%\n75g"}
+            />
           </Field>
           <Field label="Prezzo Tesserati (€)">
             <input className="w-full px-2.5 py-1.5 text-sm border rounded outline-none font-mono" style={{ borderColor: "#e4e4e8" }} value={slide.prezzoTesserati} onChange={(e) => updateSlide({ prezzoTesserati: e.target.value })} onFocus={(e) => (e.target.style.borderColor = GREEN)} onBlur={(e) => (e.target.style.borderColor = "#e4e4e8")} placeholder="5,99" />
