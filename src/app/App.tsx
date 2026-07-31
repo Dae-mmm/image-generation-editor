@@ -1,7 +1,7 @@
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback, useEffect, type ReactNode } from "react";
 import {
   Upload, Download, Plus, Trash2, FileSpreadsheet,
-  RefreshCcw, Move, ZoomIn, Save, FolderOpen,
+  RefreshCcw, Move, ZoomIn, Save, FolderOpen, ChevronDown,
 } from "lucide-react";
 import * as XLSX from "xlsx";
 import simboloPSC from "../imports/SimboloPSC.png";
@@ -2107,13 +2107,14 @@ export default function App() {
       </div>
 
       {/* ── Controls ── */}
-      <div className="w-72 shrink-0 flex flex-col overflow-y-auto" style={{ background: "white", borderLeft: "1px solid #e6e6ea" }}>
-        <div className="px-4 py-3" style={{ borderBottom: "1px solid #f2f2f4" }}>
+      <div className="w-72 shrink-0 flex flex-col overflow-hidden" style={{ background: "white", borderLeft: "1px solid #e6e6ea" }}>
+        <div className="px-4 py-3 shrink-0" style={{ borderBottom: "1px solid #f2f2f4" }}>
           <div className="font-bold text-sm" style={{ color: "#111" }}>Slide Editor</div>
           <div className="text-xs mt-0.5" style={{ color: "#bbb" }}>Slide {current + 1}/{slides.length} · 800 × {slideH}px</div>
         </div>
 
-        <Section label="Progetto">
+        <div className="flex-1 overflow-y-auto min-h-0">
+        <Section label="Progetto" defaultOpen>
           <div className="flex gap-2">
             <button className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded border text-xs font-medium hover:bg-gray-50 transition-colors" style={{ borderColor: "#e2e2e6", color: "#555" }} onClick={saveProject}>
               <Save size={13} /> Salva JSON
@@ -2125,7 +2126,7 @@ export default function App() {
           </div>
         </Section>
 
-        <Section label="Incolla prodotti">
+        <Section label="Incolla prodotti" defaultOpen>
           <textarea
             className="w-full px-2.5 py-2 text-xs border rounded outline-none font-mono resize-y"
             style={{ borderColor: "#e4e4e8", minHeight: 96 }}
@@ -2602,7 +2603,7 @@ export default function App() {
           )}
         </Section>
 
-        <Section label="Dati slide">
+        <Section label="Dati slide" defaultOpen>
           <Field label="Descrizione prodotto">
             <textarea
               className="w-full px-2.5 py-1.5 text-sm border rounded outline-none resize-y"
@@ -2712,8 +2713,9 @@ export default function App() {
             </button>
           )}
         </Section>
+        </div>
 
-        <div className="p-4 mt-auto flex flex-col gap-2" style={{ borderTop: "1px solid #f2f2f4" }}>
+        <div className="p-4 shrink-0 flex flex-col gap-2" style={{ borderTop: "1px solid #f2f2f4", background: "white" }}>
           <button
             className="w-full flex items-center justify-center gap-2 py-3 rounded font-bold text-sm text-white disabled:opacity-50"
             style={{ background: GREEN }}
@@ -2739,11 +2741,33 @@ export default function App() {
 
 // ─── Sidebar helpers ──────────────────────────────────────────────────────────
 
-function Section({ label, children }: { label: string; children: ReactNode }) {
+function Section({ label, children, defaultOpen = false }: { label: string; children: ReactNode; defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className="p-4 flex flex-col gap-3" style={{ borderBottom: "1px solid #f2f2f4" }}>
-      <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.11em", color: "#c0c0c4", textTransform: "uppercase" }}>{label}</div>
-      {children}
+    <div style={{ borderBottom: "1px solid #f2f2f4" }}>
+      <button
+        type="button"
+        className="w-full flex items-center justify-between gap-2 px-4 py-3 text-left"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.11em", color: "#c0c0c4", textTransform: "uppercase" }}>
+          {label}
+        </span>
+        <ChevronDown
+          size={14}
+          style={{
+            color: "#c0c0c4",
+            flexShrink: 0,
+            transform: open ? "rotate(0deg)" : "rotate(-90deg)",
+            transition: "transform 0.15s ease",
+          }}
+        />
+      </button>
+      {open && (
+        <div className="px-4 pb-4 flex flex-col gap-3">
+          {children}
+        </div>
+      )}
     </div>
   );
 }
