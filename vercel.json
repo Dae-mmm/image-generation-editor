@@ -1,6 +1,6 @@
 {
   "functions": {
-    "api/fal/proxy.ts": {
+    "api/generate.cjs": {
       "maxDuration": 60,
       "memory": 1024
     }
