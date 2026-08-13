@@ -819,6 +819,12 @@ function DraggableImage({
   latest.current = transform;
   const editingRef = useRef(isEditing);
   editingRef.current = isEditing;
+  const previewScaleRef = useRef(previewScale);
+  previewScaleRef.current = previewScale;
+  const onUpdateRef = useRef(onUpdate);
+  onUpdateRef.current = onUpdate;
+  const onGestureStartRef = useRef(onGestureStart);
+  onGestureStartRef.current = onGestureStart;
   const gestureStarted = useRef(false);
   const wheelTimer = useRef<number | null>(null);
   const fid = `fu-${label.replace(/\W/g, "")}`;
@@ -826,25 +832,112 @@ function DraggableImage({
   const beginGesture = () => {
     if (gestureStarted.current) return;
     gestureStarted.current = true;
-    onGestureStart?.();
+    onGestureStartRef.current?.();
   };
 
+  // Pointer + pinch (touch/pen/mouse). Native listeners so preventDefault works on iOS.
   useEffect(() => {
-    const onMove = (e: MouseEvent) => {
-      if (!dragging.current || !latest.current) return;
-      const dx = (e.clientX - lastPos.current.x) / previewScale;
-      const dy = (e.clientY - lastPos.current.y) / previewScale;
-      lastPos.current = { x: e.clientX, y: e.clientY };
-      onUpdate({ ...latest.current, x: latest.current.x + dx, y: latest.current.y + dy });
+    const el = rootRef.current;
+    if (!el) return;
+
+    const pointers = new Map<number, { x: number; y: number }>();
+    let lastPinchDist: number | null = null;
+    let lastPinchMid: { x: number; y: number } | null = null;
+
+    const pan = (dx: number, dy: number) => {
+      const t = latest.current;
+      if (!t) return;
+      const ps = previewScaleRef.current || 1;
+      const next = { ...t, x: t.x + dx / ps, y: t.y + dy / ps };
+      latest.current = next;
+      onUpdateRef.current(next);
     };
-    const onUp = () => {
-      dragging.current = false;
-      gestureStarted.current = false;
+
+    const zoom = (factor: number) => {
+      const t = latest.current;
+      if (!t) return;
+      const nextScale = Math.max(0.15, Math.min(12, t.scale * factor));
+      const next = { ...t, scale: Math.round(nextScale * 1000) / 1000 };
+      latest.current = next;
+      onUpdateRef.current(next);
     };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-    return () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
-  }, [onUpdate, previewScale]);
+
+    const onDown = (e: PointerEvent) => {
+      if (!editingRef.current || !latest.current) return;
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      beginGesture();
+      try { el.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pointers.size === 1) {
+        dragging.current = true;
+        lastPos.current = { x: e.clientX, y: e.clientY };
+      } else {
+        dragging.current = false;
+        lastPinchDist = null;
+        lastPinchMid = null;
+      }
+      if (e.pointerType !== "mouse") e.preventDefault();
+      e.stopPropagation();
+    };
+
+    const onMove = (e: PointerEvent) => {
+      if (!pointers.has(e.pointerId) || !latest.current) return;
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      const pts = [...pointers.values()];
+      if (pts.length >= 2) {
+        const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+        const mid = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
+        if (lastPinchDist && lastPinchDist > 4) zoom(dist / lastPinchDist);
+        if (lastPinchMid) pan(mid.x - lastPinchMid.x, mid.y - lastPinchMid.y);
+        lastPinchDist = dist;
+        lastPinchMid = mid;
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+      if (dragging.current) {
+        pan(e.clientX - lastPos.current.x, e.clientY - lastPos.current.y);
+        lastPos.current = { x: e.clientX, y: e.clientY };
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    };
+
+    const onEnd = (e: PointerEvent) => {
+      if (!pointers.has(e.pointerId)) return;
+      pointers.delete(e.pointerId);
+      lastPinchDist = null;
+      lastPinchMid = null;
+      if (pointers.size === 1) {
+        const rem = [...pointers.values()][0];
+        dragging.current = true;
+        lastPos.current = rem;
+      } else {
+        dragging.current = false;
+        gestureStarted.current = false;
+      }
+    };
+
+    const onTouchMove = (e: TouchEvent) => {
+      if (!editingRef.current || pointers.size === 0) return;
+      e.preventDefault();
+    };
+
+    el.addEventListener("pointerdown", onDown, { passive: false });
+    window.addEventListener("pointermove", onMove, { passive: false });
+    window.addEventListener("pointerup", onEnd);
+    window.addEventListener("pointercancel", onEnd);
+    el.addEventListener("touchmove", onTouchMove, { passive: false });
+    document.addEventListener("touchmove", onTouchMove, { passive: false });
+    return () => {
+      el.removeEventListener("pointerdown", onDown);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onEnd);
+      window.removeEventListener("pointercancel", onEnd);
+      el.removeEventListener("touchmove", onTouchMove);
+      document.removeEventListener("touchmove", onTouchMove);
+    };
+  }, []);
 
   // Non-passive wheel so zoom works reliably over the preview
   useEffect(() => {
@@ -858,15 +951,18 @@ function DraggableImage({
       if (wheelTimer.current) window.clearTimeout(wheelTimer.current);
       wheelTimer.current = window.setTimeout(() => { gestureStarted.current = false; }, 280);
       const f = e.deltaY < 0 ? 1.025 : 1 / 1.025;
-      const next = Math.max(0.15, Math.min(12, latest.current.scale * f));
-      onUpdate({ ...latest.current, scale: Math.round(next * 1000) / 1000 });
+      const t = latest.current;
+      const nextScale = Math.max(0.15, Math.min(12, t.scale * f));
+      const next = { ...t, scale: Math.round(nextScale * 1000) / 1000 };
+      latest.current = next;
+      onUpdateRef.current(next);
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => {
       el.removeEventListener("wheel", onWheel);
       if (wheelTimer.current) window.clearTimeout(wheelTimer.current);
     };
-  }, [onUpdate, onGestureStart]);
+  }, []);
 
   return (
     <div
@@ -875,14 +971,9 @@ function DraggableImage({
       style={{
         cursor: isEditing ? "grab" : transform ? "pointer" : "default",
         userSelect: "none",
+        WebkitUserSelect: "none",
+        touchAction: isEditing ? "none" : "auto",
         overflow: showOverflow ? "visible" : "hidden",
-      }}
-      onMouseDown={(e) => {
-        if (!transform || !isEditing) return;
-        beginGesture();
-        dragging.current = true;
-        lastPos.current = { x: e.clientX, y: e.clientY };
-        e.preventDefault(); e.stopPropagation();
       }}
       onClick={(e) => { if (!transform) { e.stopPropagation(); document.getElementById(fid)?.click(); } }}
     >
@@ -1377,7 +1468,7 @@ function SlideCard({
   logoLatest.current = logoBox;
 
   useEffect(() => {
-    const onMove = (e: MouseEvent) => {
+    const onMove = (e: PointerEvent) => {
       if (!logoMode.current) return;
       const dx = (e.clientX - logoLast.current.x) / scale;
       const dy = (e.clientY - logoLast.current.y) / scale;
@@ -1395,11 +1486,13 @@ function SlideCard({
       }
     };
     const onUp = () => { logoMode.current = null; };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
     return () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
     };
   }, [onUpdateLogoBox, scale]);
 
@@ -1411,6 +1504,7 @@ function SlideCard({
         background: GREEN, borderRadius: BR,
         overflow: photoInteractive ? "visible" : "hidden",
         flexShrink: 0,
+        touchAction: "none",
       }}
       onClick={() => { if (activeEdit) onSetEdit(null); onSelectBoxLine(null); }}
     >
@@ -1433,6 +1527,7 @@ function SlideCard({
           background: "#c8c8c8",
           zIndex: 2,
           cursor: slide.bg ? "grab" : "pointer",
+          touchAction: slide.bg ? "none" : "auto",
         }}
         onClick={(e) => { e.stopPropagation(); if (slide.bg) onSetEdit(null); }}
       >
@@ -1595,16 +1690,19 @@ function SlideCard({
           borderRadius: LOGO_RADIUS,
           boxShadow: vis.logoBoxBg ? "0 6px 20px rgba(0,0,0,0.18)" : undefined,
           overflow: "hidden", zIndex: 10,
-          cursor: activeEdit === "logoBox" ? "grab" : activeEdit === "logo" ? "grab" : "pointer",
+          cursor: activeEdit === "logoBox" ? "grab" : activeEdit === "logo" || slide.logo ? "grab" : "pointer",
           outline: activeEdit === "logoBox" ? "2px dashed rgba(79,141,83,0.95)" : undefined,
           outlineOffset: 3,
+          touchAction: slide.logo ? "none" : "auto",
         }}
         onClick={(e) => {
           e.stopPropagation();
           if (activeEdit === "logo") return;
+          // Touch: keep pan/pinch on the logo image. Box move stays in the editor.
+          if (window.matchMedia("(pointer: coarse)").matches) return;
           onSetEdit(activeEdit === "logoBox" ? null : "logoBox");
         }}
-        onMouseDown={(e) => {
+        onPointerDown={(e) => {
           if (activeEdit !== "logoBox") return;
           logoMode.current = "move";
           logoLast.current = { x: e.clientX, y: e.clientY };
@@ -1624,7 +1722,7 @@ function SlideCard({
       >
         <DraggableImage
           transform={slide.logo} onUpdate={onUpdateLogo} onUpload={onUploadLogo}
-          isEditing={activeEdit === "logo"} label="Carica logo"
+          isEditing={!!slide.logo && activeEdit !== "logoBox"} label="Carica logo"
           objectFit="contain" previewScale={scale}
           onGestureStart={onLogoGestureStart}
         />
@@ -1637,8 +1735,9 @@ function SlideCard({
               background: GREEN, cursor: "nwse-resize",
               boxShadow: "0 0 0 2px white",
               zIndex: 2,
+              touchAction: "none",
             }}
-            onMouseDown={(e) => {
+            onPointerDown={(e) => {
               logoMode.current = "resize";
               logoLast.current = { x: e.clientX, y: e.clientY };
               e.preventDefault();
@@ -2167,7 +2266,10 @@ export default function App() {
       <div
         ref={previewRef}
         className="flex-1 min-w-0 flex items-center justify-center relative"
-        style={{ overflow: photoMode ? "auto" : "hidden" }}
+        style={{
+          overflow: photoMode && !compact ? "auto" : "hidden",
+          touchAction: compact ? "none" : undefined,
+        }}
       >
         <div style={{
           position: "absolute", inset: 0, pointerEvents: "none",
