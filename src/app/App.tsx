@@ -2,6 +2,7 @@ import { useState, useRef, useCallback, useEffect, type ReactNode } from "react"
 import {
   Upload, Download, Plus, Trash2,
   RefreshCcw, Move, ZoomIn, Save, FolderOpen, ChevronDown, Sparkles, X,
+  Layers, SlidersHorizontal,
 } from "lucide-react";
 import simboloPSC from "../imports/SimboloPSC.png";
 import { downloadImageUrl, formatFalError, generateFromPhoto, toExportableSrc } from "../lib/fal";
@@ -343,6 +344,21 @@ const CARD_W = 800;
 const GREEN   = "#4f8d53";
 const BR      = 36;          // card border-radius
 const DEFAULT_H = 685;
+const COMPACT_MQ = "(max-width: 1023px)";
+const MOBILE_NAV_H = "3.5rem";
+
+function useCompactLayout() {
+  const [compact, setCompact] = useState(
+    () => typeof window !== "undefined" && window.matchMedia(COMPACT_MQ).matches,
+  );
+  useEffect(() => {
+    const mql = window.matchMedia(COMPACT_MQ);
+    const apply = () => setCompact(mql.matches);
+    mql.addEventListener("change", apply);
+    return () => mql.removeEventListener("change", apply);
+  }, []);
+  return compact;
+}
 
 /** Soft drop shadow of the green card on the white page (preview + export). */
 interface CardShadow {
@@ -1657,6 +1673,9 @@ export default function App() {
   const [falSourceSrc, setFalSourceSrc] = useState<string | null>(null);
   const [falError, setFalError] = useState("");
   const [falStatus, setFalStatus] = useState("");
+  const compact = useCompactLayout();
+  const [slidesOpen, setSlidesOpen] = useState(false);
+  const [editorOpen, setEditorOpen] = useState(false);
   const previewRef = useRef<HTMLDivElement>(null);
   const bgUndo = useRef<ImgTransform[]>([]);
   const bgRedo = useRef<ImgTransform[]>([]);
@@ -1669,13 +1688,22 @@ export default function App() {
     const compute = () => {
       if (!previewRef.current) return;
       const { width, height } = previewRef.current.getBoundingClientRect();
-      setPreviewScale(Math.max(0.15, Math.min((width - 40) / CARD_W, (height - 40) / slideH, 1)));
+      const padX = compact ? 16 : 40;
+      const padY = compact ? 88 : 40;
+      setPreviewScale(Math.max(0.12, Math.min((width - padX) / CARD_W, (height - padY) / slideH, 1)));
     };
     compute();
     const obs = new ResizeObserver(compute);
     if (previewRef.current) obs.observe(previewRef.current);
     return () => obs.disconnect();
-  }, [slideH]);
+  }, [slideH, compact]);
+
+  useEffect(() => {
+    if (!compact) {
+      setSlidesOpen(false);
+      setEditorOpen(false);
+    }
+  }, [compact]);
 
   // Clear image undo stacks when changing slide
   useEffect(() => {
@@ -1706,6 +1734,8 @@ export default function App() {
     setFalSourceSrc(sourceSrc);
     setFalResultUrl(null);
     setFalModalOpen(true);
+    setSlidesOpen(false);
+    setEditorOpen(false);
     try {
       const url = await generateFromPhoto(sourceSrc, prompt, setFalStatus);
       setFalResultUrl(url);
@@ -2031,19 +2061,70 @@ export default function App() {
     activeEdit !== "logo" &&
     !selectedBoxLineId;
 
+  const toggleSlides = () => {
+    setSlidesOpen((open) => !open);
+    setEditorOpen(false);
+  };
+  const toggleEditor = () => {
+    setEditorOpen((open) => !open);
+    setSlidesOpen(false);
+  };
+  const closePanels = () => {
+    setSlidesOpen(false);
+    setEditorOpen(false);
+  };
+
+  const navPad = `calc(${MOBILE_NAV_H} + env(safe-area-inset-bottom, 0px))`;
+
   // ─── Render ──────────────────────────────────────────────────────────────────
 
   return (
-    <div className="flex h-screen overflow-hidden" style={{ fontFamily: "system-ui, -apple-system, sans-serif", background: "#e8e8ec" }}>
+    <div
+      className="flex overflow-hidden"
+      style={{
+        fontFamily: "system-ui, -apple-system, sans-serif",
+        background: "#e8e8ec",
+        height: "100dvh",
+        paddingBottom: compact ? navPad : 0,
+      }}
+    >
 
       {/* ── Slide list ── */}
-      <div className="flex flex-col w-52 shrink-0" style={{ background: "#1b1b26", color: "white", borderRight: "1px solid rgba(255,255,255,0.05)" }}>
+      {compact && slidesOpen && (
+        <button
+          type="button"
+          aria-label="Chiudi elenco slide"
+          className="fixed inset-0 z-40"
+          style={{ background: "rgba(0,0,0,0.4)", bottom: navPad }}
+          onClick={closePanels}
+        />
+      )}
+      <div
+        className={
+          compact
+            ? `fixed z-50 top-0 left-0 flex flex-col overflow-hidden w-[min(18rem,88vw)] transition-transform duration-200 ease-out ${slidesOpen ? "translate-x-0" : "-translate-x-full pointer-events-none"}`
+            : "flex flex-col w-52 shrink-0"
+        }
+        style={{
+          background: "#1b1b26",
+          color: "white",
+          borderRight: "1px solid rgba(255,255,255,0.05)",
+          height: compact ? `calc(100dvh - ${navPad})` : undefined,
+        }}
+      >
         <div className="p-4" style={{ borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
-          <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.14em", color: "#555", marginBottom: 10 }}>SLIDE</div>
+          <div className="flex items-center justify-between gap-2" style={{ marginBottom: 10 }}>
+            <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.14em", color: "#555" }}>SLIDE</div>
+            {compact && (
+              <button type="button" onClick={closePanels} style={{ color: "#888" }} aria-label="Chiudi">
+                <X size={16} />
+              </button>
+            )}
+          </div>
           <button
             className="w-full flex items-center gap-2 px-3 py-2 rounded text-sm font-semibold"
             style={{ background: GREEN, color: "white" }}
-            onClick={addSlide}
+            onClick={() => { addSlide(); if (compact) closePanels(); }}
           >
             <Plus size={14} /> Nuova slide
           </button>
@@ -2054,7 +2135,7 @@ export default function App() {
               key={s.id}
               className="group flex items-center gap-2 px-3 py-2.5 rounded cursor-pointer"
               style={{ background: i === current ? "rgba(255,255,255,0.09)" : "transparent" }}
-              onClick={() => { setCurrent(i); setActiveEdit(null); }}
+              onClick={() => { setCurrent(i); setActiveEdit(null); if (compact) closePanels(); }}
             >
               <div
                 className="flex items-center justify-center w-6 h-6 rounded text-xs font-bold shrink-0"
@@ -2069,7 +2150,7 @@ export default function App() {
                 {s.prezzoTesserati && <div className="text-xs" style={{ color: "#4a4a5a" }}>{s.prezzoTesserati}€</div>}
               </div>
               <button
-                className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                className={compact ? "shrink-0" : "opacity-0 group-hover:opacity-100 transition-opacity shrink-0"}
                 style={{ color: "#4a4a5a" }}
                 onClick={(e) => { e.stopPropagation(); deleteSlide(i); }}
                 onMouseOver={(e) => (e.currentTarget.style.color = "#ff6b6b")}
@@ -2085,7 +2166,7 @@ export default function App() {
       {/* ── Preview ── */}
       <div
         ref={previewRef}
-        className="flex-1 flex items-center justify-center relative"
+        className="flex-1 min-w-0 flex items-center justify-center relative"
         style={{ overflow: photoMode ? "auto" : "hidden" }}
       >
         <div style={{
@@ -2154,7 +2235,7 @@ export default function App() {
               zIndex: 35,
               background: "rgba(255,255,255,0.94)",
               border: "1px solid #e4e4e8",
-              maxWidth: "min(560px, calc(100% - 24px))",
+              maxWidth: "min(560px, calc(100% - 16px))",
               width: "100%",
             }}
           >
@@ -2164,7 +2245,7 @@ export default function App() {
               style={{ borderColor: "#e4e4e8", color: "#333" }}
               value={falPrompt}
               onChange={(e) => setFalPrompt(e.target.value)}
-              placeholder="Descrivi il prodotto in breve…"
+              placeholder="Descrivi il prodotto…"
               disabled={falGenerating}
             />
             <button
@@ -2175,11 +2256,11 @@ export default function App() {
               onClick={handleFalGenerate}
             >
               <Sparkles size={13} />
-              {falGenerating ? "Generazione…" : "Genera da questa"}
+              {falGenerating ? "…" : compact ? "Genera" : "Genera da questa"}
             </button>
           </div>
         )}
-        {(photoMode || activeEdit || selectedBoxLineId) && (
+        {!compact && (photoMode || activeEdit || selectedBoxLineId) && (
           <div
             className="absolute bottom-5 left-1/2 -translate-x-1/2 flex items-center gap-2 px-4 py-2 rounded-full text-xs text-white"
             style={{ background: "rgba(0,0,0,0.72)", backdropFilter: "blur(8px)", zIndex: 30 }}
@@ -2193,16 +2274,54 @@ export default function App() {
             {!photoMode && activeEdit && slide.bg && <>&nbsp;·&nbsp; Click foto per tornare al pan</>}
           </div>
         )}
-        <div className="absolute top-3 right-3 text-xs px-2 py-1 rounded" style={{ background: "rgba(0,0,0,0.28)", color: "rgba(255,255,255,0.55)" }}>
+        <div
+          className="absolute text-xs px-2 py-1 rounded"
+          style={{
+            top: compact ? undefined : 12,
+            right: 12,
+            bottom: compact ? 12 : undefined,
+            background: "rgba(0,0,0,0.28)",
+            color: "rgba(255,255,255,0.55)",
+          }}
+        >
           {Math.round(previewScale * 100)}%
         </div>
       </div>
 
       {/* ── Controls ── */}
-      <div className="w-72 shrink-0 flex flex-col overflow-hidden" style={{ background: "white", borderLeft: "1px solid #e6e6ea" }}>
+      {compact && editorOpen && (
+        <button
+          type="button"
+          aria-label="Chiudi editor"
+          className="fixed inset-0 z-40"
+          style={{ background: "rgba(0,0,0,0.4)", bottom: navPad }}
+          onClick={closePanels}
+        />
+      )}
+      <div
+        className={
+          compact
+            ? `fixed z-50 top-0 right-0 flex flex-col w-[min(20rem,92vw)] overflow-hidden transition-transform duration-200 ease-out ${editorOpen ? "translate-x-0" : "translate-x-full pointer-events-none"}`
+            : "w-72 shrink-0 flex flex-col overflow-hidden"
+        }
+        style={{
+          background: "white",
+          borderLeft: "1px solid #e6e6ea",
+          height: compact ? `calc(100dvh - ${navPad})` : undefined,
+        }}
+      >
         <div className="px-4 py-3 shrink-0" style={{ borderBottom: "1px solid #f2f2f4" }}>
-          <div className="font-bold text-sm" style={{ color: "#111" }}>Slide Editor</div>
-          <div className="text-xs mt-0.5" style={{ color: "#bbb" }}>Slide {current + 1}/{slides.length} · 800 × {slideH}px</div>
+          <div className="flex items-start justify-between gap-2">
+            <div>
+              <div className="font-bold text-sm" style={{ color: "#111" }}>Slide Editor</div>
+              <div className="text-xs mt-0.5" style={{ color: "#bbb" }}>Slide {current + 1}/{slides.length} · 800 × {slideH}px</div>
+            </div>
+            {compact && (
+              <button type="button" onClick={closePanels} style={{ color: "#999" }} aria-label="Chiudi editor">
+                <X size={18} />
+              </button>
+            )}
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto min-h-0">
@@ -2817,14 +2936,57 @@ export default function App() {
         </div>
       </div>
 
+      {compact && (
+        <nav
+          className="fixed left-0 right-0 z-[55] grid grid-cols-3"
+          style={{
+            bottom: 0,
+            height: `calc(${MOBILE_NAV_H} + env(safe-area-inset-bottom, 0px))`,
+            paddingBottom: "env(safe-area-inset-bottom, 0px)",
+            background: "white",
+            borderTop: "1px solid #e6e6ea",
+            boxShadow: "0 -8px 24px rgba(0,0,0,0.06)",
+          }}
+        >
+          <button
+            type="button"
+            className="flex flex-col items-center justify-center gap-0.5 text-[11px] font-semibold"
+            style={{ color: slidesOpen ? GREEN : "#666" }}
+            onClick={toggleSlides}
+          >
+            <Layers size={18} />
+            Slide
+          </button>
+          <button
+            type="button"
+            className="flex flex-col items-center justify-center gap-0.5 text-[11px] font-semibold disabled:opacity-50"
+            style={{ color: GREEN }}
+            disabled={exporting}
+            onClick={() => { closePanels(); handleExport(); }}
+          >
+            <Download size={18} />
+            {exporting ? "…" : "JPEG"}
+          </button>
+          <button
+            type="button"
+            className="flex flex-col items-center justify-center gap-0.5 text-[11px] font-semibold"
+            style={{ color: editorOpen ? GREEN : "#666" }}
+            onClick={toggleEditor}
+          >
+            <SlidersHorizontal size={18} />
+            Editor
+          </button>
+        </nav>
+      )}
+
       {falModalOpen && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          className="fixed inset-0 z-[80] flex items-end sm:items-center justify-center p-0 sm:p-4"
           style={{ background: "rgba(0,0,0,0.55)", backdropFilter: "blur(4px)" }}
         >
           <div
-            className="w-full max-w-lg rounded-2xl overflow-hidden flex flex-col"
-            style={{ background: "white", maxHeight: "90vh", boxShadow: "0 24px 80px rgba(0,0,0,0.35)" }}
+            className="w-full max-w-lg rounded-t-2xl sm:rounded-2xl overflow-hidden flex flex-col"
+            style={{ background: "white", maxHeight: "92dvh", boxShadow: "0 24px 80px rgba(0,0,0,0.35)" }}
           >
             <div className="flex items-center justify-between px-4 py-3" style={{ borderBottom: "1px solid #eee" }}>
               <div className="text-sm font-bold" style={{ color: "#222" }}>Anteprima generazione</div>
