@@ -4,7 +4,7 @@ import {
   RefreshCcw, Move, ZoomIn, Save, FolderOpen, ChevronDown, Sparkles, X,
 } from "lucide-react";
 import simboloPSC from "../imports/SimboloPSC.png";
-import { downloadImageUrl, formatFalError, generateFromPhoto } from "../lib/fal";
+import { downloadImageUrl, formatFalError, generateFromPhoto, toExportableSrc } from "../lib/fal";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -518,12 +518,13 @@ function rrect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h
   ctx.closePath();
 }
 
-function loadImg(src: string): Promise<HTMLImageElement> {
+async function loadImg(src: string): Promise<HTMLImageElement> {
+  const localSrc = await toExportableSrc(src);
   return new Promise((res, rej) => {
     const img = new Image();
     img.onload = () => res(img);
-    img.onerror = rej;
-    img.src = src;
+    img.onerror = () => rej(new Error("Impossibile caricare l'immagine"));
+    img.src = localSrc;
   });
 }
 
@@ -1730,12 +1731,18 @@ export default function App() {
     await runFalGenerate(src, falPrompt);
   };
 
-  const handleFalSostituisci = () => {
+  const handleFalSostituisci = async () => {
     if (!falResultUrl) return;
-    updateSlide({ bg: { src: falResultUrl, x: 0, y: 0, scale: 1 } });
-    setFalModalOpen(false);
-    setFalResultUrl(null);
-    setFalError("");
+    try {
+      const src = await toExportableSrc(falResultUrl);
+      updateSlide({ bg: { src, x: 0, y: 0, scale: 1 } });
+      setFalModalOpen(false);
+      setFalResultUrl(null);
+      setFalError("");
+    } catch (err) {
+      console.error("[fal] sostituisci", err);
+      setFalError("Impossibile usare l'immagine generata. Riprova o scaricala e caricala a mano.");
+    }
   };
 
   const handleFalAnnulla = () => {
@@ -1993,7 +2000,14 @@ export default function App() {
 
   const handleExport = async () => {
     setExporting(true);
-    try { await exportSlide(slide, slideH, fontFam, cardShadow); } finally { setExporting(false); }
+    try {
+      await exportSlide(slide, slideH, fontFam, cardShadow);
+    } catch (err) {
+      console.error("[export]", err);
+      alert("Errore durante l'export JPEG.");
+    } finally {
+      setExporting(false);
+    }
   };
 
   const handleExportAll = async () => {
