@@ -42,16 +42,61 @@ async function blobToDataUrl(blob: Blob): Promise<string> {
   });
 }
 
+function isRemoteHttpUrl(src: string): boolean {
+  return /^https?:\/\//i.test(src);
+}
+
+const exportableCache = new Map<string, Promise<string>>();
+
+async function fetchRemoteAsDataUrl(url: string): Promise<string> {
+  const tryFetch = async (target: string) => {
+    const res = await fetch(target);
+    if (!res.ok) throw new Error("Download fallito");
+    const blob = await res.blob();
+    if (blob.type && !blob.type.startsWith("image/") && blob.type !== "application/octet-stream") {
+      throw new Error("Risposta non è un'immagine");
+    }
+    return blobToDataUrl(blob);
+  };
+
+  try {
+    return await tryFetch(url);
+  } catch (directErr) {
+    try {
+      return await tryFetch(`/api/proxy-image?url=${encodeURIComponent(url)}`);
+    } catch {
+      throw directErr instanceof Error ? directErr : new Error("Download fallito");
+    }
+  }
+}
+
+/**
+ * Remote Fal URLs display in <img> but taint the canvas (CORS), so JPEG/ZIP
+ * export fails. Convert them to same-origin data URLs like user uploads.
+ */
+export function toExportableSrc(src: string): Promise<string> {
+  if (!src || !isRemoteHttpUrl(src)) return Promise.resolve(src);
+  let pending = exportableCache.get(src);
+  if (!pending) {
+    pending = fetchRemoteAsDataUrl(src).catch((err) => {
+      exportableCache.delete(src);
+      throw err;
+    });
+    exportableCache.set(src, pending);
+  }
+  return pending;
+}
+
 /** Resize/compress so payload stays under Vercel ~4.5MB body limit. */
 async function compressImageSrc(src: string, maxEdge = 1600, quality = 0.82): Promise<string> {
-  if (src.startsWith("data:") && src.length < 900_000) return src;
+  const localSrc = await toExportableSrc(src);
+  if (localSrc.startsWith("data:") && localSrc.length < 900_000) return localSrc;
 
   const img = await new Promise<HTMLImageElement>((resolve, reject) => {
     const el = new Image();
     el.onload = () => resolve(el);
     el.onerror = () => reject(new Error("Impossibile caricare l'immagine"));
-    el.crossOrigin = "anonymous";
-    el.src = src;
+    el.src = localSrc;
   });
 
   const scale = Math.min(1, maxEdge / Math.max(img.naturalWidth, img.naturalHeight));
@@ -109,11 +154,14 @@ export async function generateFromPhoto(
   if (!data?.url || typeof data.url !== "string") {
     throw new Error("Risposta server senza URL immagine");
   }
-  return data.url;
+
+  onStatus?.("Salvataggio immagine…");
+  return toExportableSrc(data.url);
 }
 
 export async function downloadImageUrl(url: string, filename = "generata.jpg") {
-  const res = await fetch(url);
+  const src = await toExportableSrc(url);
+  const res = await fetch(src);
   if (!res.ok) throw new Error("Download fallito");
   const blob = await res.blob();
   const objectUrl = URL.createObjectURL(blob);

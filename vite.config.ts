@@ -24,6 +24,50 @@ function falGenerateDevApi(): Plugin {
         console.warn('[fal] TLS verify disabilitato (solo locale)')
       }
 
+      server.middlewares.use('/api/proxy-image', (req, res) => {
+        void (async () => {
+          res.setHeader('Access-Control-Allow-Origin', '*')
+          res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS')
+          if (req.method === 'OPTIONS') {
+            res.statusCode = 204
+            res.end()
+            return
+          }
+          if (req.method !== 'GET') {
+            res.statusCode = 405
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify({ message: 'Method not allowed' }))
+            return
+          }
+
+          const rawUrl = (req as Connect.IncomingMessage & { originalUrl?: string }).originalUrl || req.url || ''
+          const imageUrl = new URL(rawUrl, 'http://localhost').searchParams.get('url') || ''
+          try {
+            const { fetchAllowedImage } = await import('./lib/proxy-fal-image')
+            const { buffer, contentType } = await fetchAllowedImage(imageUrl)
+            res.statusCode = 200
+            res.setHeader('Content-Type', contentType)
+            res.setHeader('Cache-Control', 'private, max-age=3600')
+            res.end(buffer)
+          } catch (err) {
+            console.error('[api/proxy-image]', err)
+            const e = err as Error & { status?: number }
+            res.statusCode = e.status && e.status >= 400 && e.status < 600 ? e.status : 502
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify({ message: e.message || 'Proxy immagine fallito' }))
+          }
+        })().catch((err: Error) => {
+          console.error('[api/proxy-image] handler', err)
+          if (!(res as Connect.ServerResponse).headersSent) {
+            res.statusCode = 500
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify({ message: err.message || 'Proxy error' }))
+          } else {
+            res.end()
+          }
+        })
+      })
+
       server.middlewares.use('/api/generate', (req, res) => {
         void (async () => {
           if (req.method === 'OPTIONS') {
