@@ -58,3 +58,9 @@
   white-space: nowrap;
   animation: fal-pulse-soft 1.6s ease-in-out infinite;
 }
+
+@media (max-width: 1023px) {
+  input, textarea, select {
+    font-size: 16px !important;
+  }
+}
