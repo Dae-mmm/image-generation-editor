@@ -346,6 +346,30 @@ const BR      = 36;          // card border-radius
 const DEFAULT_H = 685;
 const COMPACT_MQ = "(max-width: 1023px)";
 const MOBILE_NAV_H = "3.5rem";
+/** Privilege Shopping Club Newsletter project file */
+const PROJECT_EXT = "pscnl";
+const PROJECT_KIND = "pscnl";
+
+function todayISODate(): string {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function normalizeISODate(raw: string): string | null {
+  const s = String(raw ?? "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+  const t = Date.parse(`${s}T00:00:00`);
+  if (!Number.isFinite(t)) return null;
+  return s;
+}
+
+function projectFileName(newsletterDate: string): string {
+  const d = normalizeISODate(newsletterDate) || todayISODate();
+  return `PSC-NL_${d}.${PROJECT_EXT}`;
+}
 
 function useCompactLayout() {
   const [compact, setCompact] = useState(
@@ -1775,6 +1799,9 @@ export default function App() {
   const compact = useCompactLayout();
   const [slidesOpen, setSlidesOpen] = useState(false);
   const [editorOpen, setEditorOpen] = useState(false);
+  const [newsletterDate, setNewsletterDate] = useState(todayISODate);
+  const [saveModalOpen, setSaveModalOpen] = useState(false);
+  const [saveDateDraft, setSaveDateDraft] = useState(todayISODate);
   const previewRef = useRef<HTMLDivElement>(null);
   const bgUndo = useRef<ImgTransform[]>([]);
   const bgRedo = useRef<ImgTransform[]>([]);
@@ -2101,12 +2128,31 @@ export default function App() {
     if (slide.logo) updateSlide({ logo: { ...slide.logo, x: 0, y: 0, scale: 1 } });
   };
 
-  const saveProject = () => {
-    const project = { version: 2, slideHeight: slideH, fontFamily: fontFam, cardShadow, slides };
+  const openSaveModal = () => {
+    setSaveDateDraft(normalizeISODate(newsletterDate) || todayISODate());
+    setSaveModalOpen(true);
+  };
+
+  const confirmSaveProject = () => {
+    const date = normalizeISODate(saveDateDraft) || todayISODate();
+    setNewsletterDate(date);
+    const project = {
+      kind: PROJECT_KIND,
+      version: 3,
+      newsletterDate: date,
+      slideHeight: slideH,
+      fontFamily: fontFam,
+      cardShadow,
+      slides,
+    };
     const blob = new Blob([JSON.stringify(project)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement("a"); a.href = url; a.download = "progetto-slide.json"; a.click();
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = projectFileName(date);
+    a.click();
     setTimeout(() => URL.revokeObjectURL(url), 2000);
+    setSaveModalOpen(false);
   };
 
   const loadProject = async (file: File) => {
@@ -2123,6 +2169,8 @@ export default function App() {
       setSlides(project.slides.map((raw: any) => normalizeSlide(raw, fallback)));
       if (project.slideHeight) setSlideH(project.slideHeight);
       if (project.cardShadow) setCardShadow({ ...defaultCardShadow(), ...project.cardShadow });
+      const loadedDate = normalizeISODate(String(project.newsletterDate ?? ""));
+      setNewsletterDate(loadedDate || todayISODate());
       setCurrent(0); setActiveEdit(null);
     } catch { alert("Errore nel caricamento del progetto."); }
   };
@@ -2429,14 +2477,18 @@ export default function App() {
         <div className="flex-1 overflow-y-auto min-h-0">
         <Section label="Progetto" accent="#d8efe0" accentText="#4a8f62" defaultOpen>
           <div className="flex gap-2">
-            <button className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded border text-xs font-medium hover:bg-gray-50 transition-colors" style={{ borderColor: "#e2e2e6", color: "#555" }} onClick={saveProject}>
-              <Save size={13} /> Salva JSON
+            <button className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded border text-xs font-medium hover:bg-gray-50 transition-colors" style={{ borderColor: "#e2e2e6", color: "#555" }} onClick={openSaveModal}>
+              <Save size={13} /> Salva .pscnl
             </button>
             <label className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded border text-xs font-medium hover:bg-gray-50 transition-colors cursor-pointer" style={{ borderColor: "#e2e2e6", color: "#555" }}>
-              <FolderOpen size={13} /> Carica JSON
-              <input type="file" accept=".json" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) loadProject(f); e.target.value = ""; }} />
+              <FolderOpen size={13} /> Apri
+              <input type="file" accept=".pscnl,.json,application/json" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) loadProject(f); e.target.value = ""; }} />
             </label>
           </div>
+          <p style={{ fontSize: 10, color: "#bbb", margin: 0, lineHeight: 1.45 }}>
+            File progetto <span style={{ fontFamily: "ui-monospace, monospace" }}>.pscnl</span>
+            {newsletterDate ? ` · NL ${newsletterDate}` : ""}
+          </p>
         </Section>
 
         <Section label="Incolla prodotti" accent="#ffe8d4" accentText="#b07a45" defaultOpen>
@@ -3079,6 +3131,64 @@ export default function App() {
             Editor
           </button>
         </nav>
+      )}
+
+      {saveModalOpen && (
+        <div
+          className="fixed inset-0 z-[80] flex items-end sm:items-center justify-center p-0 sm:p-4"
+          style={{ background: "rgba(0,0,0,0.55)", backdropFilter: "blur(4px)" }}
+          onClick={() => setSaveModalOpen(false)}
+        >
+          <div
+            className="w-full max-w-sm rounded-t-2xl sm:rounded-2xl overflow-hidden flex flex-col"
+            style={{ background: "white", boxShadow: "0 24px 80px rgba(0,0,0,0.35)" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-4 py-3" style={{ borderBottom: "1px solid #eee" }}>
+              <div className="text-sm font-bold" style={{ color: "#222" }}>Salva progetto .pscnl</div>
+              <button type="button" onClick={() => setSaveModalOpen(false)} style={{ color: "#999" }} aria-label="Chiudi">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="p-4 flex flex-col gap-3">
+              <label className="flex flex-col gap-1">
+                <span style={{ fontSize: 11, color: "#888" }}>Data della newsletter</span>
+                <input
+                  type="date"
+                  className="w-full px-3 py-2 text-sm rounded-lg border outline-none"
+                  style={{ borderColor: "#e4e4e8" }}
+                  value={saveDateDraft}
+                  onChange={(e) => setSaveDateDraft(e.target.value)}
+                  autoFocus
+                />
+              </label>
+              <p style={{ fontSize: 11, color: "#999", margin: 0, lineHeight: 1.45 }}>
+                Il file si chiamerà{" "}
+                <span style={{ fontFamily: "ui-monospace, monospace", color: "#555" }}>
+                  {projectFileName(saveDateDraft)}
+                </span>
+              </p>
+            </div>
+            <div className="grid grid-cols-2 gap-2 px-4 py-3" style={{ borderTop: "1px solid #eee" }}>
+              <button
+                type="button"
+                className="px-3 py-2.5 rounded-lg text-xs font-semibold border"
+                style={{ borderColor: "#e4e4e8", color: "#666" }}
+                onClick={() => setSaveModalOpen(false)}
+              >
+                Annulla
+              </button>
+              <button
+                type="button"
+                className="px-3 py-2.5 rounded-lg text-xs font-bold text-white"
+                style={{ background: GREEN }}
+                onClick={confirmSaveProject}
+              >
+                Salva
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {falModalOpen && (
