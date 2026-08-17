@@ -2,7 +2,7 @@ import { useState, useRef, useCallback, useEffect, type ReactNode } from "react"
 import {
   Upload, Download, Plus, Trash2,
   RefreshCcw, Move, ZoomIn, Save, FolderOpen, ChevronDown, Sparkles, X,
-  Layers, SlidersHorizontal,
+  Layers, SlidersHorizontal, Image as ImageIcon,
 } from "lucide-react";
 import simboloPSC from "../imports/SimboloPSC.png";
 import { downloadImageUrl, formatFalError, generateFromPhoto, toExportableSrc } from "../lib/fal";
@@ -501,6 +501,21 @@ async function fileToDataUrl(f: File): Promise<string> {
     r.onerror = rej;
     r.readAsDataURL(f);
   });
+}
+
+function imageFileFromClipboard(e: ClipboardEvent): File | null {
+  const data = e.clipboardData;
+  if (!data) return null;
+  for (const item of Array.from(data.items)) {
+    if (item.kind === "file" && item.type.startsWith("image/")) {
+      const file = item.getAsFile();
+      if (file) return file;
+    }
+  }
+  for (const file of Array.from(data.files || [])) {
+    if (file.type.startsWith("image/")) return file;
+  }
+  return null;
 }
 
 function cleanPrice(raw: string): string {
@@ -1802,6 +1817,7 @@ export default function App() {
   const [newsletterDate, setNewsletterDate] = useState(todayISODate);
   const [saveModalOpen, setSaveModalOpen] = useState(false);
   const [saveDateDraft, setSaveDateDraft] = useState(todayISODate);
+  const [pasteImage, setPasteImage] = useState<{ file: File; preview: string } | null>(null);
   const previewRef = useRef<HTMLDivElement>(null);
   const bgUndo = useRef<ImgTransform[]>([]);
   const bgRedo = useRef<ImgTransform[]>([]);
@@ -2084,6 +2100,47 @@ export default function App() {
     // Foto: pan subito (nessuna selezione layout). Logo: entra in edit immagine.
     setActiveEdit(key === "logo" ? "logo" : null);
   };
+
+  const closePasteImage = () => {
+    setPasteImage((cur) => {
+      if (cur?.preview) URL.revokeObjectURL(cur.preview);
+      return null;
+    });
+  };
+
+  const applyPastedImage = async (key: "bg" | "logo") => {
+    if (!pasteImage) return;
+    const file = pasteImage.file;
+    closePasteImage();
+    setSlidesOpen(false);
+    setEditorOpen(false);
+    await uploadImage(file, key);
+  };
+
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      const file = imageFileFromClipboard(e);
+      if (!file) return;
+      e.preventDefault();
+      setPasteImage((cur) => {
+        if (cur?.preview) URL.revokeObjectURL(cur.preview);
+        return { file, preview: URL.createObjectURL(file) };
+      });
+    };
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+  }, []);
+
+  useEffect(() => {
+    if (!pasteImage) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      closePasteImage();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [pasteImage]);
 
   const copyLayoutValues = async () => {
     const payload = JSON.stringify({
@@ -3061,6 +3118,9 @@ export default function App() {
               </div>
             )}
           </Field>
+          <p style={{ fontSize: 10, color: "#bbb", margin: 0, lineHeight: 1.45 }}>
+            Oppure incolla dagli appunti (Ctrl/⌘V) e scegli foto o logo.
+          </p>
           {(slide.bg || slide.logo) && (
             <button className="flex items-center gap-1.5 text-xs hover:opacity-60 transition-opacity" style={{ color: "#c0c0c4" }} onClick={resetPos}>
               <RefreshCcw size={11} /> Reset posizioni
@@ -3131,6 +3191,58 @@ export default function App() {
             Editor
           </button>
         </nav>
+      )}
+
+      {pasteImage && (
+        <div
+          className="fixed inset-0 z-[90] flex items-end sm:items-center justify-center p-0 sm:p-4"
+          style={{ background: "rgba(0,0,0,0.55)", backdropFilter: "blur(4px)" }}
+          onClick={closePasteImage}
+        >
+          <div
+            className="w-full max-w-sm rounded-t-2xl sm:rounded-2xl overflow-hidden flex flex-col"
+            style={{ background: "white", boxShadow: "0 24px 80px rgba(0,0,0,0.35)" }}
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => { if (e.key === "Escape") closePasteImage(); }}
+          >
+            <div className="flex items-center justify-between px-4 py-3" style={{ borderBottom: "1px solid #eee" }}>
+              <div className="text-sm font-bold" style={{ color: "#222" }}>Incolla immagine</div>
+              <button type="button" onClick={closePasteImage} style={{ color: "#999" }} aria-label="Chiudi">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="p-4 flex flex-col gap-3">
+              <div
+                className="w-full rounded-xl overflow-hidden flex items-center justify-center"
+                style={{ background: "#f3f3f5", maxHeight: 220 }}
+              >
+                <img
+                  src={pasteImage.preview}
+                  alt="Immagine dagli appunti"
+                  className="max-w-full max-h-[220px] object-contain"
+                />
+              </div>
+              <button
+                type="button"
+                className="w-full flex items-center justify-center gap-2 px-3 py-3 rounded-lg text-sm font-bold text-white"
+                style={{ background: GREEN }}
+                onClick={() => applyPastedImage("bg")}
+              >
+                <ImageIcon size={16} />
+                Inserisci come foto
+              </button>
+              <button
+                type="button"
+                className="w-full flex items-center justify-center gap-2 px-3 py-3 rounded-lg text-sm font-semibold border"
+                style={{ borderColor: "#e2e2e6", color: "#444" }}
+                onClick={() => applyPastedImage("logo")}
+              >
+                <Upload size={16} />
+                Inserisci come logo
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {saveModalOpen && (
