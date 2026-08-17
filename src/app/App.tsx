@@ -2,7 +2,7 @@ import { useState, useRef, useCallback, useEffect, type ReactNode } from "react"
 import {
   Upload, Download, Plus, Trash2,
   RefreshCcw, Move, ZoomIn, Save, FolderOpen, ChevronDown, Sparkles, X,
-  Layers, SlidersHorizontal, Image as ImageIcon,
+  Layers, SlidersHorizontal, Image as ImageIcon, Copy,
 } from "lucide-react";
 import simboloPSC from "../imports/SimboloPSC.png";
 import { downloadImageUrl, formatFalError, generateFromPhoto, toExportableSrc } from "../lib/fal";
@@ -444,6 +444,13 @@ function pbox1Rect(H: number) {
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 const uid = () => Math.random().toString(36).slice(2);
+
+function cloneSlide(slide: Slide): Slide {
+  const copy = JSON.parse(JSON.stringify(slide)) as Slide;
+  copy.id = uid();
+  copy.boxLines = (copy.boxLines ?? []).map((line) => ({ ...line, id: uid() }));
+  return copy;
+}
 
 function mkSlide(d?: Partial<Omit<Slide, "id">>): Slide {
   const layout = layoutFromPreset("standard");
@@ -2174,6 +2181,19 @@ export default function App() {
 
   const addSlide = () => setSlides((prev) => { setCurrent(prev.length); return [...prev, mkSlide()]; });
 
+  const duplicateSlide = (idx: number) => {
+    setSlides((prev) => {
+      const src = prev[idx];
+      if (!src) return prev;
+      const next = [...prev];
+      next.splice(idx + 1, 0, cloneSlide(src));
+      setCurrent(idx + 1);
+      return next;
+    });
+    setActiveEdit(null);
+    setSelectedBoxLineId(null);
+  };
+
   const deleteSlide = (idx: number) => {
     if (slides.length === 1) return;
     setSlides((prev) => prev.filter((_, i) => i !== idx));
@@ -2353,15 +2373,32 @@ export default function App() {
                 </div>
                 {s.prezzoTesserati && <div className="text-xs" style={{ color: "#4a4a5a" }}>{s.prezzoTesserati}€</div>}
               </div>
-              <button
-                className={compact ? "shrink-0" : "opacity-0 group-hover:opacity-100 transition-opacity shrink-0"}
-                style={{ color: "#4a4a5a" }}
-                onClick={(e) => { e.stopPropagation(); deleteSlide(i); }}
-                onMouseOver={(e) => (e.currentTarget.style.color = "#ff6b6b")}
-                onMouseOut={(e)  => (e.currentTarget.style.color = "#4a4a5a")}
-              >
-                <Trash2 size={13} />
-              </button>
+              <div className="flex items-center gap-0.5 shrink-0">
+                <button
+                  type="button"
+                  title="Duplica slide"
+                  aria-label="Duplica slide"
+                  className={compact ? "" : "opacity-0 group-hover:opacity-100 transition-opacity"}
+                  style={{ color: "#4a4a5a" }}
+                  onClick={(e) => { e.stopPropagation(); duplicateSlide(i); }}
+                  onMouseOver={(e) => (e.currentTarget.style.color = "#fff")}
+                  onMouseOut={(e)  => (e.currentTarget.style.color = "#4a4a5a")}
+                >
+                  <Copy size={13} />
+                </button>
+                <button
+                  type="button"
+                  title="Elimina slide"
+                  aria-label="Elimina slide"
+                  className={compact ? "" : "opacity-0 group-hover:opacity-100 transition-opacity"}
+                  style={{ color: "#4a4a5a" }}
+                  onClick={(e) => { e.stopPropagation(); deleteSlide(i); }}
+                  onMouseOver={(e) => (e.currentTarget.style.color = "#ff6b6b")}
+                  onMouseOut={(e)  => (e.currentTarget.style.color = "#4a4a5a")}
+                >
+                  <Trash2 size={13} />
+                </button>
+              </div>
             </div>
           ))}
         </div>
