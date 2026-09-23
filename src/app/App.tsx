@@ -346,9 +346,11 @@ const BR      = 36;          // card border-radius
 const DEFAULT_H = 685;
 const COMPACT_MQ = "(max-width: 1023px)";
 const MOBILE_NAV_H = "3.5rem";
-/** Privilege Shopping Club Newsletter project file */
-const PROJECT_EXT = "pscnl";
-const PROJECT_KIND = "pscnl";
+/** One .pscn file is one slide. Legacy newsletters were a single .pscnl with every slide. */
+const SLIDE_EXT = "pscn";
+const SLIDE_KIND = "pscn";
+
+type SaveAction = "this" | "all" | "bundle";
 
 function todayISODate(): string {
   const d = new Date();
@@ -366,9 +368,40 @@ function normalizeISODate(raw: string): string | null {
   return s;
 }
 
-function projectFileName(newsletterDate: string): string {
+function slideFileName(newsletterDate: string, descrizione: string): string {
   const d = normalizeISODate(newsletterDate) || todayISODate();
-  return `PSC-NL_${d}.${PROJECT_EXT}`;
+  return `PSC_${d}_${safeExportName(descrizione)}.${SLIDE_EXT}`;
+}
+
+function slidesArchiveName(newsletterDate: string, withJpeg: boolean): string {
+  const d = normalizeISODate(newsletterDate) || todayISODate();
+  return withJpeg ? `PSC_${d}_pscn-jpeg.zip` : `PSC_${d}_pscn.zip`;
+}
+
+function saveDialogCopy(action: SaveAction, newsletterDate: string, descrizione: string) {
+  const date = normalizeISODate(newsletterDate) || todayISODate();
+  if (action === "this") {
+    return {
+      title: "Salva questa slide",
+      detail: "Scarica solo la slide corrente come file .pscn.",
+      filename: slideFileName(date, descrizione),
+      confirm: "Salva",
+    };
+  }
+  if (action === "all") {
+    return {
+      title: "Salva tutte le slide",
+      detail: "Un file .pscn per ogni slide, raccolti in uno ZIP.",
+      filename: slidesArchiveName(date, false),
+      confirm: "Salva tutte",
+    };
+  }
+  return {
+    title: "Esporta tutto",
+    detail: "Per ogni slide, file .pscn e JPEG nello stesso ZIP.",
+    filename: slidesArchiveName(date, true),
+    confirm: "Esporta",
+  };
 }
 
 function useCompactLayout() {
@@ -813,6 +846,111 @@ function downloadBlob(blob: Blob, filename: string) {
 async function exportSlide(slide: Slide, H: number, fontFam: string, cardShadow: CardShadow = defaultCardShadow()) {
   const blob = await renderSlideBlob(slide, H, fontFam, cardShadow);
   downloadBlob(blob, `${safeExportName(slide.descrizione)}.jpg`);
+}
+
+function downloadJson(data: unknown, filename: string) {
+  downloadBlob(new Blob([JSON.stringify(data)], { type: "application/json" }), filename);
+}
+
+function buildSlideFile(
+  slide: Slide,
+  newsletterDate: string,
+  slideHeight: number,
+  fontFamily: string,
+  cardShadow: CardShadow,
+) {
+  return {
+    kind: SLIDE_KIND,
+    version: 1,
+    newsletterDate,
+    slideHeight,
+    fontFamily,
+    cardShadow,
+    slide,
+  };
+}
+
+function isBlankSlide(slide: Slide): boolean {
+  return (
+    !slide.descrizione.trim() &&
+    !slide.prezzoTesserati.trim() &&
+    !slide.prezzoListino.trim() &&
+    !slide.sconto.trim() &&
+    !slide.bg &&
+    !slide.logo &&
+    !slide.useBoxLines &&
+    slide.boxLines.length === 0
+  );
+}
+
+interface SlideFileMeta {
+  slideHeight?: number;
+  cardShadow?: Partial<CardShadow>;
+  newsletterDate?: string;
+}
+
+function parseSlideFile(project: any): { slides: Slide[]; meta: SlideFileMeta } {
+  if (!project || typeof project !== "object") throw new Error("invalid");
+  const fallback = {
+    textLayout: project.textLayout ? mergeTextLayout(project.textLayout) : undefined,
+    logoBox: project.logoBox,
+    tesseratiBox: project.tesseratiBox,
+    listinoBox: project.listinoBox,
+    visibility: project.visibility,
+  };
+  const single = project.slide && typeof project.slide === "object" && !Array.isArray(project.slide);
+  const rawSlides = project.kind === SLIDE_KIND && single
+    ? [project.slide]
+    : Array.isArray(project.slides)
+      ? project.slides
+      : single
+        ? [project.slide]
+        : null;
+  if (!rawSlides?.length) throw new Error("invalid");
+  const meta: SlideFileMeta = {};
+  if (typeof project.slideHeight === "number" && Number.isFinite(project.slideHeight) && project.slideHeight > 0) {
+    meta.slideHeight = project.slideHeight;
+  }
+  if (project.cardShadow && typeof project.cardShadow === "object") meta.cardShadow = project.cardShadow;
+  const date = normalizeISODate(String(project.newsletterDate ?? ""));
+  if (date) meta.newsletterDate = date;
+  return {
+    meta,
+    slides: rawSlides.map((raw: any) => cloneSlide(normalizeSlide(raw, fallback))),
+  };
+}
+
+function uniqueZipBase(used: Map<string, number>, base: string): string {
+  const n = (used.get(base) ?? 0) + 1;
+  used.set(base, n);
+  return n === 1 ? base : `${base}-${n}`;
+}
+
+async function zipSlides(
+  slides: Slide[],
+  H: number,
+  fontFam: string,
+  cardShadow: CardShadow,
+  opts: { jpeg: boolean; pscn: boolean; newsletterDate?: string },
+): Promise<Blob> {
+  const { default: JSZip } = await import("jszip");
+  const zip = new JSZip();
+  const used = new Map<string, number>();
+  for (let i = 0; i < slides.length; i++) {
+    const s = slides[i];
+    const ordinal = String(i + 1).padStart(2, "0");
+    const base = uniqueZipBase(used, `${ordinal}-${safeExportName(s.descrizione, `slide-${i + 1}`)}`);
+    if (opts.pscn) {
+      zip.file(
+        `${base}.${SLIDE_EXT}`,
+        JSON.stringify(buildSlideFile(s, opts.newsletterDate || todayISODate(), H, fontFam, cardShadow)),
+      );
+    }
+    if (opts.jpeg) {
+      zip.file(`${base}.jpg`, await renderSlideBlob(s, H, fontFam, cardShadow));
+    }
+  }
+  return zip.generateAsync({ type: "blob" });
 }
 
 async function exportAllSlidesZip(
@@ -1823,7 +1961,9 @@ export default function App() {
   const [editorOpen, setEditorOpen] = useState(false);
   const [newsletterDate, setNewsletterDate] = useState(todayISODate);
   const [saveModalOpen, setSaveModalOpen] = useState(false);
+  const [saveAction, setSaveAction] = useState<SaveAction>("this");
   const [saveDateDraft, setSaveDateDraft] = useState(todayISODate);
+  const [projectMsg, setProjectMsg] = useState("");
   const [pasteImage, setPasteImage] = useState<{ file: File; preview: string } | null>(null);
   const previewRef = useRef<HTMLDivElement>(null);
   const bgUndo = useRef<ImgTransform[]>([]);
@@ -2205,51 +2345,77 @@ export default function App() {
     if (slide.logo) updateSlide({ logo: { ...slide.logo, x: 0, y: 0, scale: 1 } });
   };
 
-  const openSaveModal = () => {
+  const openSaveModal = (action: SaveAction) => {
+    setSaveAction(action);
     setSaveDateDraft(normalizeISODate(newsletterDate) || todayISODate());
     setSaveModalOpen(true);
   };
 
-  const confirmSaveProject = () => {
+  const confirmSave = async () => {
+    if (exporting) return;
     const date = normalizeISODate(saveDateDraft) || todayISODate();
     setNewsletterDate(date);
-    const project = {
-      kind: PROJECT_KIND,
-      version: 3,
-      newsletterDate: date,
-      slideHeight: slideH,
-      fontFamily: fontFam,
-      cardShadow,
-      slides,
-    };
-    const blob = new Blob([JSON.stringify(project)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = projectFileName(date);
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 2000);
-    setSaveModalOpen(false);
+    setExporting(true);
+    try {
+      if (saveAction === "this") {
+        downloadJson(
+          buildSlideFile(slide, date, slideH, fontFam, cardShadow),
+          slideFileName(date, slide.descrizione),
+        );
+      } else if (saveAction === "all") {
+        const blob = await zipSlides(slides, slideH, fontFam, cardShadow, {
+          jpeg: false,
+          pscn: true,
+          newsletterDate: date,
+        });
+        downloadBlob(blob, slidesArchiveName(date, false));
+      } else {
+        const blob = await zipSlides(slides, slideH, fontFam, cardShadow, {
+          jpeg: true,
+          pscn: true,
+          newsletterDate: date,
+        });
+        downloadBlob(blob, slidesArchiveName(date, true));
+      }
+      setSaveModalOpen(false);
+    } catch (err) {
+      console.error("[save]", err);
+      alert(saveAction === "bundle" ? "Errore durante l'export." : "Errore durante il salvataggio.");
+    } finally {
+      setExporting(false);
+    }
   };
 
-  const loadProject = async (file: File) => {
-    try {
-      const project = JSON.parse(await file.text());
-      if (!Array.isArray(project.slides)) throw new Error();
-      const fallback = {
-        textLayout: project.textLayout ? mergeTextLayout(project.textLayout) : undefined,
-        logoBox: project.logoBox,
-        tesseratiBox: project.tesseratiBox,
-        listinoBox: project.listinoBox,
-        visibility: project.visibility,
-      };
-      setSlides(project.slides.map((raw: any) => normalizeSlide(raw, fallback)));
-      if (project.slideHeight) setSlideH(project.slideHeight);
-      if (project.cardShadow) setCardShadow({ ...defaultCardShadow(), ...project.cardShadow });
-      const loadedDate = normalizeISODate(String(project.newsletterDate ?? ""));
-      setNewsletterDate(loadedDate || todayISODate());
-      setCurrent(0); setActiveEdit(null);
-    } catch { alert("Errore nel caricamento del progetto."); }
+  const importSlideFiles = async (list: FileList | File[]) => {
+    const files = Array.from(list);
+    const loaded: Slide[] = [];
+    const failed: string[] = [];
+    let meta: SlideFileMeta | null = null;
+    for (const file of files) {
+      try {
+        const parsed = parseSlideFile(JSON.parse(await file.text()));
+        if (!meta) meta = parsed.meta;
+        loaded.push(...parsed.slides);
+      } catch {
+        failed.push(file.name);
+      }
+    }
+    if (!loaded.length) {
+      alert("Nessuna slide valida. Ogni file .pscn deve contenere una slide.");
+      return;
+    }
+    const replaceDeck = slides.length === 1 && isBlankSlide(slides[0]);
+    if (replaceDeck && meta) {
+      if (meta.slideHeight) setSlideH(meta.slideHeight);
+      if (meta.cardShadow) setCardShadow({ ...defaultCardShadow(), ...meta.cardShadow });
+      if (meta.newsletterDate) setNewsletterDate(meta.newsletterDate);
+    }
+    setSlides(replaceDeck ? loaded : [...slides, ...loaded]);
+    setCurrent(replaceDeck ? 0 : slides.length);
+    setActiveEdit(null);
+    setSelectedBoxLineId(null);
+    const importedLabel = loaded.length === 1 ? "1 slide importata" : `${loaded.length} slide importate`;
+    setProjectMsg(failed.length ? `${importedLabel} · ${failed.length} file ignorati` : importedLabel);
   };
 
   const handleExport = async () => {
@@ -2299,6 +2465,7 @@ export default function App() {
   };
 
   const navPad = `calc(${MOBILE_NAV_H} + env(safe-area-inset-bottom, 0px))`;
+  const saveDialog = saveDialogCopy(saveAction, saveDateDraft, slide.descrizione);
 
   // ─── Render ──────────────────────────────────────────────────────────────────
 
@@ -2571,16 +2738,30 @@ export default function App() {
         <div className="flex-1 overflow-y-auto min-h-0">
         <Section label="Progetto" accent="#d8efe0" accentText="#4a8f62" defaultOpen>
           <div className="flex gap-2">
-            <button className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded border text-xs font-medium hover:bg-gray-50 transition-colors" style={{ borderColor: "#e2e2e6", color: "#555" }} onClick={openSaveModal}>
-              <Save size={13} /> Salva .pscnl
+            <button type="button" className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded border text-xs font-medium hover:bg-gray-50 transition-colors disabled:opacity-40" style={{ borderColor: "#e2e2e6", color: "#555" }} disabled={exporting} onClick={() => openSaveModal("this")}>
+              <Save size={13} /> Salva questa
             </button>
-            <label className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded border text-xs font-medium hover:bg-gray-50 transition-colors cursor-pointer" style={{ borderColor: "#e2e2e6", color: "#555" }}>
-              <FolderOpen size={13} /> Apri
-              <input type="file" accept=".pscnl,.json,application/json" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) loadProject(f); e.target.value = ""; }} />
-            </label>
+            <button type="button" className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded border text-xs font-medium hover:bg-gray-50 transition-colors disabled:opacity-40" style={{ borderColor: "#e2e2e6", color: "#555" }} disabled={exporting} onClick={() => openSaveModal("all")}>
+              <Save size={13} /> Salva tutte
+            </button>
           </div>
+          <label className="flex items-center justify-center gap-1.5 px-3 py-2 rounded border text-xs font-medium hover:bg-gray-50 transition-colors cursor-pointer" style={{ borderColor: "#e2e2e6", color: "#555" }}>
+            <FolderOpen size={13} /> Importa .pscn
+            <input
+              type="file"
+              accept=".pscn,.pscnl,.json,application/json"
+              multiple
+              className="hidden"
+              onChange={(e) => {
+                const files = e.target.files;
+                if (files?.length) importSlideFiles(files);
+                e.target.value = "";
+              }}
+            />
+          </label>
+          {projectMsg && <p style={{ fontSize: 11, color: GREEN, margin: 0 }}>{projectMsg}</p>}
           <p style={{ fontSize: 10, color: "#bbb", margin: 0, lineHeight: 1.45 }}>
-            File progetto <span style={{ fontFamily: "ui-monospace, monospace" }}>.pscnl</span>
+            Ogni file <span style={{ fontFamily: "ui-monospace, monospace" }}>.pscn</span> è una slide. Puoi selezionarne più di uno e importarli insieme.
             {newsletterDate ? ` · NL ${newsletterDate}` : ""}
           </p>
         </Section>
@@ -3174,7 +3355,7 @@ export default function App() {
             onClick={handleExport}
           >
             <Download size={15} />
-            {exporting ? "Esportando…" : "Esporta JPEG"}
+            {exporting && !saveModalOpen ? "Esportando…" : "Esporta JPEG"}
           </button>
           <button
             className="w-full flex items-center justify-center gap-2 py-2 rounded text-xs border disabled:opacity-40"
@@ -3182,7 +3363,15 @@ export default function App() {
             disabled={exporting}
             onClick={handleExportAll}
           >
-            <Download size={12} /> Esporta tutte (ZIP)
+            <Download size={12} /> Esporta tutte JPEG
+          </button>
+          <button
+            className="w-full flex items-center justify-center gap-2 py-2 rounded text-xs border disabled:opacity-40"
+            style={{ borderColor: "#e2e2e6", color: "#888" }}
+            disabled={exporting}
+            onClick={() => openSaveModal("bundle")}
+          >
+            <Download size={12} /> Esporta tutto (.pscn + JPEG)
           </button>
         </div>
       </div>
@@ -3216,7 +3405,7 @@ export default function App() {
             onClick={() => { closePanels(); handleExport(); }}
           >
             <Download size={18} />
-            {exporting ? "…" : "JPEG"}
+            {exporting && !saveModalOpen ? "…" : "JPEG"}
           </button>
           <button
             type="button"
@@ -3286,7 +3475,7 @@ export default function App() {
         <div
           className="fixed inset-0 z-[80] flex items-end sm:items-center justify-center p-0 sm:p-4"
           style={{ background: "rgba(0,0,0,0.55)", backdropFilter: "blur(4px)" }}
-          onClick={() => setSaveModalOpen(false)}
+          onClick={() => { if (!exporting) setSaveModalOpen(false); }}
         >
           <div
             className="w-full max-w-sm rounded-t-2xl sm:rounded-2xl overflow-hidden flex flex-col"
@@ -3294,12 +3483,13 @@ export default function App() {
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between px-4 py-3" style={{ borderBottom: "1px solid #eee" }}>
-              <div className="text-sm font-bold" style={{ color: "#222" }}>Salva progetto .pscnl</div>
-              <button type="button" onClick={() => setSaveModalOpen(false)} style={{ color: "#999" }} aria-label="Chiudi">
+              <div className="text-sm font-bold" style={{ color: "#222" }}>{saveDialog.title}</div>
+              <button type="button" onClick={() => { if (!exporting) setSaveModalOpen(false); }} style={{ color: "#999" }} aria-label="Chiudi">
                 <X size={18} />
               </button>
             </div>
             <div className="p-4 flex flex-col gap-3">
+              <p style={{ fontSize: 12, color: "#666", margin: 0, lineHeight: 1.45 }}>{saveDialog.detail}</p>
               <label className="flex flex-col gap-1">
                 <span style={{ fontSize: 11, color: "#888" }}>Data della newsletter</span>
                 <input
@@ -3309,31 +3499,34 @@ export default function App() {
                   value={saveDateDraft}
                   onChange={(e) => setSaveDateDraft(e.target.value)}
                   autoFocus
+                  disabled={exporting}
                 />
               </label>
               <p style={{ fontSize: 11, color: "#999", margin: 0, lineHeight: 1.45 }}>
                 Il file si chiamerà{" "}
                 <span style={{ fontFamily: "ui-monospace, monospace", color: "#555" }}>
-                  {projectFileName(saveDateDraft)}
+                  {saveDialog.filename}
                 </span>
               </p>
             </div>
             <div className="grid grid-cols-2 gap-2 px-4 py-3" style={{ borderTop: "1px solid #eee" }}>
               <button
                 type="button"
-                className="px-3 py-2.5 rounded-lg text-xs font-semibold border"
+                className="px-3 py-2.5 rounded-lg text-xs font-semibold border disabled:opacity-40"
                 style={{ borderColor: "#e4e4e8", color: "#666" }}
+                disabled={exporting}
                 onClick={() => setSaveModalOpen(false)}
               >
                 Annulla
               </button>
               <button
                 type="button"
-                className="px-3 py-2.5 rounded-lg text-xs font-bold text-white"
+                className="px-3 py-2.5 rounded-lg text-xs font-bold text-white disabled:opacity-50"
                 style={{ background: GREEN }}
-                onClick={confirmSaveProject}
+                disabled={exporting}
+                onClick={confirmSave}
               >
-                Salva
+                {exporting ? "…" : saveDialog.confirm}
               </button>
             </div>
           </div>
